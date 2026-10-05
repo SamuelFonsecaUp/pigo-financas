@@ -85,6 +85,16 @@ function tokenizeText(text) {
   return rawTokens.filter(t => !STOP_WORDS.has(t));
 }
 
+// Reconhece aplicações/resgates de investimentos pelo texto do extrato
+const RESERVE_TEXT_PATTERN = /\b(APLICACAO|APLIC|RESGATE|CDB|LCI|LCA|TESOURO|CAIXINHA|PORQUINHO|POUPANCA|RENDA FIXA|RESERVA|COFRINHO)\b/;
+const RESERVE_TEXT_EXCLUDE = /\b(RENDIMENTO|RENDIMENTOS|JUROS|IOF)\b/;
+
+function isReserveDescription(text) {
+  if (!text) return false;
+  const normalized = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+  return RESERVE_TEXT_PATTERN.test(normalized) && !RESERVE_TEXT_EXCLUDE.test(normalized);
+}
+
 function cleanMerchantName(rawText) {
   if (!rawText) return '';
   let cleaned = rawText
@@ -180,11 +190,8 @@ class FinancialIntelligenceEngine {
     }
 
     // --- PILAR 2: Custos Fixos & Recorrentes (0 a 25 pts) ---
-    const recurringExpenses = this.db.prepare(`
-      SELECT SUM(amount) as total
-      FROM recurring_rules
-      WHERE type = 'expense' AND active = 1
-    `).get().total || 0;
+    // Custos fixos aprendidos dos extratos importados (assinaturas, contas mensais etc.)
+    const recurringExpenses = this.getLearnedFixedCosts(today);
 
     let recurringScore = 20;
     let recurringDiagnostic = '';
@@ -193,7 +200,7 @@ class FinancialIntelligenceEngine {
 
     if (recurringExpenses === 0) {
       recurringScore = 22;
-      recurringDiagnostic = 'Sem despesas recorrentes cadastradas ou comprometimento mínimo.';
+      recurringDiagnostic = 'Nenhum custo fixo identificado no histórico ainda. Importe mais extratos para o Pigo aprender seus padrões.';
     } else if (recurringRatio <= 0.35) {
       recurringScore = 25;
       recurringDiagnostic = `Custos fixos sob controle (${(recurringRatio * 100).toFixed(0)}% da renda). Excelente flexibilidade orçamentária.`;
@@ -275,13 +282,17 @@ class FinancialIntelligenceEngine {
     let reserveMonths = 0;
     let reserveDiagnostic = '';
     const monthlyBurnRate = avgMonthlyExpense > 0 ? avgMonthlyExpense : (effectiveExpense > 0 ? effectiveExpense : 200000);
+    const reserveAccounts = this.getReserveAccounts();
+    const reserveBase = reserveAccounts.length > 0
+      ? reserveAccounts.reduce((sum, acc) => sum + this.getAccountBalanceAt(acc.id, today), 0)
+      : totalLiquidBalance;
 
-    if (totalLiquidBalance < 0) {
+    if (reserveBase < 0) {
       reserveScore = 0;
       reserveMonths = 0;
       reserveDiagnostic = 'Saldo líquido total negativo. Priorize a regularização de saldos devedores.';
     } else {
-      reserveMonths = totalLiquidBalance / monthlyBurnRate;
+      reserveMonths = reserveBase / monthlyBurnRate;
       if (reserveMonths >= 6) {
         reserveScore = 15;
         reserveDiagnostic = `Excelente reserva (${reserveMonths.toFixed(1)} meses de despesas cobertas). Você tem segurança financeira sólida.`;
@@ -464,10 +475,11 @@ class FinancialIntelligenceEngine {
       ORDER BY transaction_date ASC
     `).all(today, endDate);
 
-    // 2.3 Active recurring rules
-    const recurringRules = this.db.prepare(`
-      SELECT * FROM recurring_rules WHERE active = 1
-    `).all();
+    // 2.3 Padrões recorrentes aprendidos do histórico (receitas e despesas)
+    const learnedPatterns = [
+      ...this.detectRecurringPatterns('income'),
+      ...this.detectRecurringPatterns('expense'),
+    ].filter(p => p.isActive);
 
     // 2.4 Credit cards with due dates and their projected invoice amounts
     const cards = this.db.prepare(`SELECT * FROM credit_cards WHERE active = 1`).all();
@@ -490,43 +502,45 @@ class FinancialIntelligenceEngine {
       });
     }
 
-    // Project recurring rules across the daysAhead window
+    // Project learned patterns across the daysAhead window
     const todayParsed = parseDate(today);
     const endParsed = parseDate(endDate);
 
-    for (const rule of recurringRules) {
-      if (rule.frequency === 'monthly') {
-        const billingDay = rule.billing_day || parseDate(rule.start_date).getDate();
-        let cur = new Date(todayParsed.getFullYear(), todayParsed.getMonth(), billingDay);
-        if (cur < todayParsed) {
-          cur = new Date(todayParsed.getFullYear(), todayParsed.getMonth() + 1, billingDay);
-        }
+    for (const pattern of learnedPatterns) {
+      const signedAmount = pattern.type === 'income' ? pattern.averageAmount : -pattern.averageAmount;
+      const label = pattern.type === 'income' ? '(Receita prevista)' : '(Despesa prevista)';
 
-        while (cur <= endParsed) {
-          const dStr = formatDate(cur);
-          if (dStr >= today && dStr <= endDate) {
-            addEvent(dStr, {
-              title: `(Recorrente) ${rule.description}`,
-              amount: rule.type === 'income' ? rule.amount : -rule.amount,
-              type: rule.type === 'income' ? 'income' : 'expense',
-            });
-          }
-          cur = new Date(cur.getFullYear(), cur.getMonth() + 1, billingDay);
+      if (pattern.suggestedFrequency === 'monthly') {
+        const billingDay = pattern.suggestedBillingDay;
+        const last = parseDate(pattern.lastDate);
+        const dayIn = (y, m) => new Date(y, m, Math.min(billingDay, new Date(y, m + 1, 0).getDate()));
+        let monthOffset = 1;
+        let cur = dayIn(last.getFullYear(), last.getMonth() + monthOffset);
+        while (cur < todayParsed) {
+          monthOffset++;
+          cur = dayIn(last.getFullYear(), last.getMonth() + monthOffset);
         }
-      } else if (rule.frequency === 'weekly') {
-        let cur = parseDate(rule.next_due_date || rule.start_date);
+        while (cur <= endParsed) {
+          addEvent(formatDate(cur), {
+            title: `${label} ${pattern.cleanDescription}`,
+            amount: signedAmount,
+            type: pattern.type,
+          });
+          monthOffset++;
+          cur = dayIn(last.getFullYear(), last.getMonth() + monthOffset);
+        }
+      } else if (pattern.suggestedFrequency === 'weekly') {
+        let cur = parseDate(pattern.lastDate);
+        cur.setDate(cur.getDate() + 7);
         while (cur < todayParsed) {
           cur.setDate(cur.getDate() + 7);
         }
         while (cur <= endParsed) {
-          const dStr = formatDate(cur);
-          if (dStr >= today && dStr <= endDate) {
-            addEvent(dStr, {
-              title: `(Semanal) ${rule.description}`,
-              amount: rule.type === 'income' ? rule.amount : -rule.amount,
-              type: rule.type === 'income' ? 'income' : 'expense',
-            });
-          }
+          addEvent(formatDate(cur), {
+            title: `${label} ${pattern.cleanDescription}`,
+            amount: signedAmount,
+            type: pattern.type,
+          });
           cur.setDate(cur.getDate() + 7);
         }
       }
@@ -894,17 +908,19 @@ class FinancialIntelligenceEngine {
   // ==========================================
   // 6. IDENTIFICAÇÃO DE RECORRÊNCIAS & ASSINATURAS
   // ==========================================
-  detectRecurringPatterns() {
-    const today = new Date().toISOString().slice(0, 10);
-    const sixMonthsAgo = addMonthsToKey(getMonthKey(today), -8);
+  detectRecurringPatterns(type = 'expense', referenceDate = null) {
+    const today = referenceDate || new Date().toISOString().slice(0, 10);
+    const windowStart = addMonthsToKey(getMonthKey(today), -8);
+    // Salários variam um pouco mais (horas extras, descontos) que assinaturas
+    const maxAmountCv = type === 'income' ? 0.15 : 0.08;
 
     const txs = this.db.prepare(`
       SELECT id, description, amount, transaction_date, category_id
       FROM transactions
-      WHERE type = 'expense' AND status != 'cancelled'
-        AND transaction_date >= '${sixMonthsAgo}-01'
+      WHERE type = ? AND status != 'cancelled'
+        AND transaction_date >= ? AND transaction_date <= ?
       ORDER BY transaction_date ASC
-    `).all();
+    `).all(type, `${windowStart}-01`, today);
 
     const groups = new Map();
     for (const tx of txs) {
@@ -917,14 +933,10 @@ class FinancialIntelligenceEngine {
       groups.get(cleanName).push(tx);
     }
 
-    const registeredRules = this.db.prepare(`SELECT description FROM recurring_rules WHERE active = 1`).all();
-    const registeredSet = new Set(registeredRules.map(r => cleanMerchantName(r.description)));
-
     const candidates = [];
 
     for (const [merchant, list] of groups.entries()) {
       if (list.length < 2) continue;
-      if (registeredSet.has(merchant)) continue;
 
       const intervals = [];
       for (let i = 1; i < list.length; i++) {
@@ -951,7 +963,7 @@ class FinancialIntelligenceEngine {
         frequency = 'weekly';
       }
 
-      if (frequency && amountCv <= 0.08) {
+      if (frequency && amountCv <= maxAmountCv) {
         const lastTx = list[list.length - 1];
         const lastDate = lastTx.transaction_date;
         const nextExpectedDate = frequency === 'monthly' ? addDays(lastDate, 30) : addDays(lastDate, 7);
@@ -971,8 +983,14 @@ class FinancialIntelligenceEngine {
           }
         }
 
+        // Padrão ainda vivo: última ocorrência dentro de ~2 ciclos
+        const daysSinceLast = Math.round((parseDate(today) - parseDate(lastDate)) / (1000 * 60 * 60 * 24));
+        const isActive = frequency === 'monthly' ? daysSinceLast <= 62 : daysSinceLast <= 21;
+
         candidates.push({
-          id: `rec_${merchant.replace(/\s+/g, '_').toLowerCase()}`,
+          id: `rec_${type}_${merchant.replace(/\s+/g, '_').toLowerCase()}`,
+          type,
+          isActive,
           rawDescription: lastTx.description,
           cleanDescription: merchant,
           averageAmount: avgAmount,
@@ -1152,106 +1170,531 @@ class FinancialIntelligenceEngine {
   }
 
   // ==========================================
-  // 9. FECHAMENTO MENSAL INTELIGENTE
+  // 9. RESERVA FINANCEIRA
+  // ==========================================
+
+  // Saldo de uma conta considerando lançamentos até a data (inclusive)
+  getAccountBalanceAt(accountId, dateStr) {
+    const row = this.db.prepare(`
+      SELECT a.initial_balance
+        + COALESCE((SELECT SUM(amount) FROM transactions WHERE account_id = a.id AND type = 'income' AND status = 'completed' AND transaction_date <= ?), 0)
+        - COALESCE((SELECT SUM(amount) FROM transactions WHERE account_id = a.id AND type = 'expense' AND credit_card_id IS NULL AND status = 'completed' AND transaction_date <= ?), 0)
+        + COALESCE((SELECT SUM(amount) FROM transactions WHERE destination_account_id = a.id AND type = 'transfer' AND status = 'completed' AND transaction_date <= ?), 0)
+        - COALESCE((SELECT SUM(amount) FROM transactions WHERE account_id = a.id AND type IN ('transfer', 'card_payment') AND status = 'completed' AND transaction_date <= ?), 0)
+        AS balance
+      FROM accounts a
+      WHERE a.id = ?
+    `).get(dateStr, dateStr, dateStr, dateStr, accountId);
+    return row ? row.balance : 0;
+  }
+
+  getReserveSettings() {
+    let row = null;
+    try {
+      row = this.db.prepare(`
+        SELECT reserve_target_months, reserve_account_ids, reserve_category_ids, reserve_initial_amount,
+               reserve_auto_detect, reserve_excluded_tx_ids
+        FROM settings WHERE id = 'app_config'
+      `).get();
+    } catch (e) {
+      row = null;
+    }
+    const parseIds = (value) => {
+      try {
+        const parsed = value ? JSON.parse(value) : null;
+        return Array.isArray(parsed) ? parsed : null;
+      } catch (e) {
+        return null;
+      }
+    };
+    return {
+      targetMonths: (row && row.reserve_target_months) || 6,
+      accountIds: parseIds(row && row.reserve_account_ids),
+      categoryIds: parseIds(row && row.reserve_category_ids),
+      initialAmount: (row && row.reserve_initial_amount) || 0,
+      autoDetect: !row || row.reserve_auto_detect === null || row.reserve_auto_detect === undefined ? true : Boolean(row.reserve_auto_detect),
+      excludedTransactionIds: parseIds(row && row.reserve_excluded_tx_ids) || [],
+    };
+  }
+
+  // Categorias que representam aportes/resgates (ex.: "Investimentos"): o dinheiro
+  // sai do extrato da conta corrente, mas vai para a reserva e não é custo de vida.
+  getReserveCategories() {
+    const { categoryIds } = this.getReserveSettings();
+    const categories = this.getExpenseUsableCategories();
+    if (categoryIds) return categories.filter(c => categoryIds.includes(c.id));
+    const normalize = (t) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    return categories.filter(c => /invest|reserva|poupan|aplicac|aporte/.test(normalize(c.name)));
+  }
+
+  // Categorias de despesa + qualquer categoria já usada em despesas
+  getExpenseUsableCategories() {
+    return this.db.prepare(`
+      SELECT id, name, color FROM categories
+      WHERE active = 1
+        AND (type = 'expense' OR id IN (SELECT DISTINCT category_id FROM transactions WHERE type = 'expense' AND category_id IS NOT NULL))
+      ORDER BY name ASC
+    `).all();
+  }
+
+  // Movimentos da reserva que passam pela conta corrente:
+  // saída = aporte (+), entrada = resgate (-). Reconhecidos pela categoria
+  // escolhida ou pelo texto do extrato (aplicação, resgate, CDB, caixinha...).
+  getReserveMovements() {
+    const { autoDetect, excludedTransactionIds } = this.getReserveSettings();
+    const reserveCategoryIds = new Set(this.getReserveCategories().map(c => c.id));
+    const reserveAccountIds = new Set(this.getReserveAccounts().map(a => a.id));
+    const excluded = new Set(excludedTransactionIds);
+
+    const rows = this.db.prepare(`
+      SELECT t.id, t.type, t.amount, t.transaction_date, t.description, t.category_id,
+             t.account_id, t.destination_account_id,
+             c.name as category_name, a.name as account_name, d.name as destination_name
+      FROM transactions t
+      LEFT JOIN categories c ON c.id = t.category_id
+      LEFT JOIN accounts a ON a.id = t.account_id
+      LEFT JOIN accounts d ON d.id = t.destination_account_id
+      WHERE t.status = 'completed' AND t.credit_card_id IS NULL
+        AND t.type IN ('income', 'expense', 'transfer')
+      ORDER BY t.transaction_date ASC, t.created_at ASC
+    `).all();
+
+    const movements = [];
+    for (const r of rows) {
+      if (r.type === 'transfer') {
+        // Transferências entre conta comum e conta de reserva (já refletidas no saldo da conta)
+        const intoReserve = reserveAccountIds.has(r.destination_account_id) && !reserveAccountIds.has(r.account_id);
+        const outOfReserve = reserveAccountIds.has(r.account_id) && !reserveAccountIds.has(r.destination_account_id);
+        if (!intoReserve && !outOfReserve) continue;
+        movements.push({
+          id: r.id,
+          date: r.transaction_date,
+          description: r.description,
+          amount: intoReserve ? r.amount : -r.amount,
+          kind: intoReserve ? 'aporte' : 'resgate',
+          source: 'transfer',
+          accountName: intoReserve ? r.account_name : r.destination_name,
+          categoryName: null,
+          countsInBalance: false,
+          excluded: false,
+        });
+        continue;
+      }
+
+      // Lançamentos dentro das próprias contas de reserva já entram pelo saldo delas
+      if (reserveAccountIds.has(r.account_id)) continue;
+
+      const byCategory = reserveCategoryIds.has(r.category_id);
+      const byText = autoDetect && isReserveDescription(r.description);
+      if (!byCategory && !byText) continue;
+
+      const isExcluded = excluded.has(r.id);
+      movements.push({
+        id: r.id,
+        date: r.transaction_date,
+        description: r.description,
+        amount: r.type === 'expense' ? r.amount : -r.amount,
+        kind: r.type === 'expense' ? 'aporte' : 'resgate',
+        source: byCategory ? 'category' : 'detected',
+        accountName: r.account_name,
+        categoryName: r.category_name,
+        countsInBalance: !isExcluded,
+        excluded: isExcluded,
+      });
+    }
+    return movements;
+  }
+
+  // Contas que compõem a reserva: escolha do usuário ou, por padrão, poupança e investimentos
+  getReserveAccounts() {
+    const { accountIds } = this.getReserveSettings();
+    const accounts = this.db.prepare(`SELECT id, name, type, color FROM accounts WHERE active = 1 ORDER BY name ASC`).all();
+    if (accountIds) return accounts.filter(a => accountIds.includes(a.id));
+    return accounts.filter(a => a.type === 'savings' || a.type === 'investment');
+  }
+
+  // Soma mensal dos custos fixos aprendidos no histórico importado
+  getLearnedFixedCosts(referenceDate = null) {
+    return this.detectRecurringPatterns('expense', referenceDate)
+      .filter(p => p.isActive)
+      .reduce((sum, p) => sum + (p.suggestedFrequency === 'weekly' ? Math.round((p.averageAmount * 52) / 12) : p.averageAmount), 0);
+  }
+
+  getMonthIncomeTotal(mKey) {
+    return this.db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
+      FROM transactions
+      WHERE type = 'income' AND status = 'completed'
+        AND transaction_date >= ? AND transaction_date <= ?
+    `).get(`${mKey}-01`, `${mKey}-31`);
+  }
+
+  getMonthExpenseTotal(mKey) {
+    return this.db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
+      FROM transactions
+      WHERE type = 'expense' AND status != 'cancelled'
+        AND (
+          (credit_card_id IS NULL AND status = 'completed' AND transaction_date >= ? AND transaction_date <= ?)
+          OR (credit_card_id IS NOT NULL AND invoice_month = ?)
+        )
+    `).get(`${mKey}-01`, `${mKey}-31`, mKey);
+  }
+
+  getReserveStatus(mKey, monthSurplus = 0, historyMonths = 6) {
+    const today = new Date().toISOString().slice(0, 10);
+    const currentKey = getMonthKey(today);
+    const settings = this.getReserveSettings();
+    const { targetMonths } = settings;
+    const reserveAccounts = this.getReserveAccounts();
+    const reserveIds = new Set(reserveAccounts.map(a => a.id));
+    const reserveCategories = this.getReserveCategories();
+    const reserveCategorySet = new Set(reserveCategories.map(c => c.id));
+    const movements = this.getReserveMovements();
+    const balanceMovements = movements.filter(m => m.countsInBalance);
+
+    // Resgates maiores que os aportes registrados indicam dinheiro guardado antes
+    // do primeiro extrato importado: usa isso como saldo inicial quando não informado.
+    let running = 0;
+    let lowest = 0;
+    for (const m of balanceMovements) {
+      running += m.amount;
+      lowest = Math.min(lowest, running);
+    }
+    const initialAmountEstimated = settings.initialAmount === 0 && lowest < 0;
+    const initialAmount = settings.initialAmount > 0 ? settings.initialAmount : Math.max(0, -lowest);
+
+    const endOf = (key) => {
+      if (key === currentKey) return today;
+      const [y, m] = key.split('-').map(Number);
+      return formatDate(new Date(y, m, 0));
+    };
+    const balanceOn = (dateStr) => initialAmount
+      + reserveAccounts.reduce((sum, acc) => sum + this.getAccountBalanceAt(acc.id, dateStr), 0)
+      + balanceMovements.filter(m => m.date <= dateStr).reduce((sum, m) => sum + m.amount, 0);
+    const movementsIn = (key, kind = null) => balanceMovements
+      .filter(m => m.date.slice(0, 7) === key && (!kind || m.kind === kind))
+      .reduce((sum, m) => sum + Math.abs(m.amount), 0);
+
+    const monthEnd = endOf(mKey);
+    const balance = balanceOn(monthEnd);
+    const previousBalance = balanceOn(endOf(addMonthsToKey(mKey, -1)));
+    const monthContribution = balance - previousBalance;
+    const averageContribution = Math.round((balance - balanceOn(endOf(addMonthsToKey(mKey, -3)))) / 3);
+    const monthAportes = movementsIn(mKey, 'aporte');
+    const monthResgates = movementsIn(mKey, 'resgate');
+
+    // Custo de vida: média das despesas dos 3 meses anteriores (meses fechados), sem os aportes
+    const costOf = (key) => Math.max(0, this.getMonthExpenseTotal(key).total - movementsIn(key, 'aporte'));
+    const pastCosts = [1, 2, 3].map(i => costOf(addMonthsToKey(mKey, -i))).filter(v => v > 0);
+    const monthlyCost = pastCosts.length > 0 ? Math.round(mean(pastCosts)) : costOf(mKey);
+
+    const targetAmount = monthlyCost * targetMonths;
+    const gap = Math.max(0, targetAmount - balance);
+    const coverageMonths = monthlyCost > 0 ? Math.max(0, balance) / monthlyCost : 0;
+    const progressPercent = targetAmount > 0 ? Math.min(100, Math.max(0, Math.round((balance / targetAmount) * 100))) : 0;
+
+    // Quanto menor a cobertura, maior a fatia do superávit sugerida para a reserva.
+    // Aportes já feitos no mês contam: a sugestão é só o que falta além deles.
+    const suggestedRate = coverageMonths < 1 ? 0.5 : coverageMonths < 3 ? 0.4 : 0.3;
+    const operationalSurplus = monthSurplus + monthAportes - monthResgates;
+    const suggestedContribution = gap > 0 && operationalSurplus > 0
+      ? Math.max(0, Math.min(gap, Math.round(operationalSurplus * suggestedRate) - Math.max(0, monthContribution)))
+      : 0;
+    const pace = Math.max(averageContribution, suggestedContribution);
+    const monthsToTarget = gap === 0 ? 0 : pace > 0 ? Math.ceil(gap / pace) : null;
+    const estimatedCompletion = monthsToTarget ? addMonthsToKey(mKey, monthsToTarget) : null;
+
+    let status = 'complete';
+    let message = `Reserva completa: ${coverageMonths.toFixed(1)} meses de custo de vida protegidos. Direcione o excedente para metas e investimentos.`;
+    if (reserveAccounts.length === 0 && reserveCategories.length === 0 && initialAmount === 0 && movements.length === 0) {
+      status = 'not_configured';
+      message = 'Diga ao Pigo onde fica sua reserva: contas (poupança, CDB, caixinha), a categoria dos aportes (ex.: Investimentos) ou o saldo que você já tem guardado.';
+    } else if (monthlyCost === 0) {
+      status = 'building';
+      message = 'Importe extratos de mais meses para o Pigo calcular seu custo de vida e a meta ideal de reserva.';
+    } else if (coverageMonths < 1) {
+      status = 'critical';
+      message = `Reserva cobre apenas ${Math.round(coverageMonths * 30)} dias de despesas. Priorize aportes antes de novos gastos.`;
+    } else if (coverageMonths < 3) {
+      status = 'building';
+      message = `Reserva em construção: ${coverageMonths.toFixed(1)} meses cobertos. O mínimo recomendado é 3 meses.`;
+    } else if (gap > 0) {
+      status = 'good';
+      message = `Boa proteção: ${coverageMonths.toFixed(1)} de ${targetMonths} meses cobertos. Faltam ${(gap / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} para a meta.`;
+    }
+
+    const history = [];
+    for (let i = historyMonths - 1; i >= 0; i--) {
+      const key = addMonthsToKey(mKey, -i);
+      history.push({
+        monthKey: key,
+        balance: balanceOn(endOf(key)),
+        target: targetAmount,
+        aportes: movementsIn(key, 'aporte'),
+        resgates: movementsIn(key, 'resgate'),
+      });
+    }
+
+    const allAccounts = this.db.prepare(`SELECT id, name, type, color FROM accounts WHERE active = 1 ORDER BY name ASC`).all();
+    const allCategories = this.getExpenseUsableCategories();
+    const monthCategoryTotal = (categoryId) => this.db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+      WHERE type = 'expense' AND status = 'completed' AND credit_card_id IS NULL AND category_id = ?
+        AND transaction_date >= ? AND transaction_date <= ?
+    `).get(categoryId, `${mKey}-01`, `${mKey}-31`).total;
+
+    return {
+      status,
+      message,
+      monthKey: mKey,
+      targetMonths,
+      initialAmount,
+      initialAmountEstimated,
+      autoDetect: settings.autoDetect,
+      usingDefaultAccounts: !settings.accountIds,
+      usingDefaultCategories: !settings.categoryIds,
+      accounts: allAccounts.map(a => ({
+        id: a.id,
+        name: a.name,
+        type: a.type,
+        color: a.color,
+        balance: this.getAccountBalanceAt(a.id, monthEnd),
+        isReserve: reserveIds.has(a.id),
+      })),
+      categories: allCategories.map(c => ({
+        id: c.id,
+        name: c.name,
+        color: c.color,
+        monthTotal: monthCategoryTotal(c.id),
+        isReserve: reserveCategorySet.has(c.id),
+      })),
+      balance,
+      previousBalance,
+      monthContribution,
+      monthAportes,
+      monthResgates,
+      averageContribution,
+      monthlyCost,
+      targetAmount,
+      gap,
+      coverageMonths: Number(coverageMonths.toFixed(1)),
+      progressPercent,
+      suggestedContribution,
+      monthsToTarget,
+      estimatedCompletion,
+      history,
+      movements: movements.filter(m => m.date <= monthEnd).slice(-60).reverse(),
+    };
+  }
+
+  // Visão completa da tela de Reserva (12 meses de evolução)
+  getReserveOverview(monthKey = null) {
+    const today = new Date().toISOString().slice(0, 10);
+    const mKey = monthKey || getMonthKey(today);
+    const surplus = this.getMonthIncomeTotal(mKey).total - this.getMonthExpenseTotal(mKey).total;
+    return this.getReserveStatus(mKey, surplus, 12);
+  }
+
+  // ==========================================
+  // 10. FECHAMENTO MENSAL INTELIGENTE
   // ==========================================
   getMonthlyCloseout(yearMonth = null) {
     const today = new Date().toISOString().slice(0, 10);
-    const mKey = yearMonth || getMonthKey(today);
+    const currentKey = getMonthKey(today);
+    let mKey = yearMonth || currentKey;
+    if (!yearMonth) {
+      // Sem extrato do mês atual ainda: abre no último mês com movimentação
+      const hasCurrent = this.db.prepare(`
+        SELECT 1 FROM transactions
+        WHERE strftime('%Y-%m', transaction_date) = ? OR invoice_month = ?
+        LIMIT 1
+      `).get(currentKey, currentKey);
+      if (!hasCurrent) {
+        const latest = this.db.prepare(`
+          SELECT MAX(COALESCE(invoice_month, strftime('%Y-%m', transaction_date))) as k
+          FROM transactions
+          WHERE COALESCE(invoice_month, strftime('%Y-%m', transaction_date)) < ?
+        `).get(currentKey);
+        if (latest && latest.k) mKey = latest.k;
+      }
+    }
     const prevKey = addMonthsToKey(mKey, -1);
+    const isCurrentMonth = mKey === currentKey;
+    const [yr, mo] = mKey.split('-').map(Number);
+    const daysInMonth = new Date(yr, mo, 0).getDate();
+    const daysElapsed = isCurrentMonth ? parseDate(today).getDate() : daysInMonth;
+    const formatBRL = (cents) => (cents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
-    const income = this.db.prepare(`
-      SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
-      FROM transactions
-      WHERE type = 'income' AND status = 'completed'
-        AND transaction_date >= '${mKey}-01' AND transaction_date <= '${mKey}-31'
-    `).get();
-
-    const expense = this.db.prepare(`
-      SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
-      FROM transactions
-      WHERE type = 'expense' AND status != 'cancelled'
-        AND (
-          (credit_card_id IS NULL AND status = 'completed' AND transaction_date >= '${mKey}-01' AND transaction_date <= '${mKey}-31')
-          OR (credit_card_id IS NOT NULL AND invoice_month = '${mKey}')
-        )
-    `).get();
-
-    const prevIncome = this.db.prepare(`
-      SELECT COALESCE(SUM(amount), 0) as total
-      FROM transactions
-      WHERE type = 'income' AND status = 'completed'
-        AND transaction_date >= '${prevKey}-01' AND transaction_date <= '${prevKey}-31'
-    `).get().total;
-
-    const prevExpense = this.db.prepare(`
-      SELECT COALESCE(SUM(amount), 0) as total
-      FROM transactions
-      WHERE type = 'expense' AND status != 'cancelled'
-        AND (
-          (credit_card_id IS NULL AND status = 'completed' AND transaction_date >= '${prevKey}-01' AND transaction_date <= '${prevKey}-31')
-          OR (credit_card_id IS NOT NULL AND invoice_month = '${prevKey}')
-        )
-    `).get().total;
+    const income = this.getMonthIncomeTotal(mKey);
+    const expense = this.getMonthExpenseTotal(mKey);
+    const prevIncome = this.getMonthIncomeTotal(prevKey).total;
+    const prevExpense = this.getMonthExpenseTotal(prevKey).total;
 
     const savedAmount = income.total - expense.total;
     const savingsRate = income.total > 0 ? Math.round((savedAmount / income.total) * 100) : 0;
 
-    const incomeChangeMoM = prevIncome > 0 ? Math.round(((income.total - prevIncome) / prevIncome) * 100) : 0;
-    const expenseChangeMoM = prevExpense > 0 ? Math.round(((expense.total - prevExpense) / prevExpense) * 100) : 0;
+    // Projeção do mês em andamento pelo ritmo diário de gastos
+    const projectedExpenseTotal = isCurrentMonth && daysElapsed < daysInMonth && daysElapsed > 0
+      ? Math.round((expense.total / daysElapsed) * daysInMonth)
+      : expense.total;
+
+    // Mês em andamento: comparar só quando já há movimentação, e pela projeção de gastos
+    const incomeChangeMoM = prevIncome > 0 && (!isCurrentMonth || income.total > 0)
+      ? Math.round(((income.total - prevIncome) / prevIncome) * 100) : 0;
+    const expenseBasis = isCurrentMonth ? projectedExpenseTotal : expense.total;
+    const expenseChangeMoM = prevExpense > 0 && expenseBasis > 0
+      ? Math.round(((expenseBasis - prevExpense) / prevExpense) * 100) : 0;
+
+    const monthFilter = `
+      t.type = 'expense' AND t.status != 'cancelled'
+      AND (
+        (t.credit_card_id IS NULL AND t.status = 'completed' AND t.transaction_date >= ? AND t.transaction_date <= ?)
+        OR (t.credit_card_id IS NOT NULL AND t.invoice_month = ?)
+      )
+    `;
+    const monthArgs = (key) => [`${key}-01`, `${key}-31`, key];
+
+    const categoryTotalsFor = (key) => {
+      const rows = this.db.prepare(`
+        SELECT t.category_id as id, SUM(t.amount) as total
+        FROM transactions t
+        WHERE ${monthFilter}
+        GROUP BY t.category_id
+      `).all(...monthArgs(key));
+      return new Map(rows.map(r => [r.id, r.total]));
+    };
+    const pastCategoryTotals = [1, 2, 3].map(i => categoryTotalsFor(addMonthsToKey(mKey, -i)));
 
     const topCategories = this.db.prepare(`
-      SELECT 
-        c.id, c.name, c.color, c.icon,
+      SELECT
+        t.category_id as id, c.name, c.color, c.icon,
         SUM(t.amount) as total,
         COUNT(t.id) as count
       FROM transactions t
       LEFT JOIN categories c ON t.category_id = c.id
-      WHERE t.type = 'expense' AND t.status != 'cancelled'
-        AND (
-          (t.credit_card_id IS NULL AND t.status = 'completed' AND t.transaction_date >= '${mKey}-01' AND t.transaction_date <= '${mKey}-31')
-          OR (t.credit_card_id IS NOT NULL AND t.invoice_month = '${mKey}')
-        )
-      GROUP BY c.id
+      WHERE ${monthFilter}
+      GROUP BY t.category_id
       ORDER BY total DESC
-      LIMIT 5
-    `).all().map(c => ({
-      ...c,
-      name: c.name || 'Sem categoria',
-      color: c.color || '#94a3b8',
-      icon: c.icon || 'Tag',
-      percentage: expense.total > 0 ? Math.round((c.total / expense.total) * 100) : 0,
-    }));
+      LIMIT 8
+    `).all(...monthArgs(mKey)).map(c => {
+      const pastValues = pastCategoryTotals.map(m => m.get(c.id) || 0);
+      const monthsWithData = pastValues.filter(v => v > 0).length;
+      const averagePrevious = monthsWithData > 0 ? Math.round(pastValues.reduce((a, b) => a + b, 0) / monthsWithData) : 0;
+      return {
+        id: c.id || 'uncategorized',
+        name: c.name || 'Sem categoria',
+        color: c.color || '#94a3b8',
+        icon: c.icon || 'Tag',
+        total: c.total,
+        count: c.count,
+        percentage: expense.total > 0 ? Math.round((c.total / expense.total) * 100) : 0,
+        averagePrevious,
+        changeVsAverage: averagePrevious > 0 ? Math.round(((c.total - averagePrevious) / averagePrevious) * 100) : null,
+      };
+    });
 
     const highestExpense = this.db.prepare(`
       SELECT t.id, t.description, t.amount, t.transaction_date, c.name as category_name
       FROM transactions t
       LEFT JOIN categories c ON t.category_id = c.id
-      WHERE t.type = 'expense' AND t.status != 'cancelled'
-        AND (
-          (t.credit_card_id IS NULL AND t.status = 'completed' AND t.transaction_date >= '${mKey}-01' AND t.transaction_date <= '${mKey}-31')
-          OR (t.credit_card_id IS NOT NULL AND t.invoice_month = '${mKey}')
-        )
+      WHERE ${monthFilter}
       ORDER BY t.amount DESC
       LIMIT 1
-    `).get();
+    `).get(...monthArgs(mKey));
+
+    const uncategorizedCount = this.db.prepare(`
+      SELECT COUNT(*) as c FROM transactions t WHERE ${monthFilter} AND t.category_id IS NULL
+    `).get(...monthArgs(mKey)).c;
+
+    const availableMonths = this.db.prepare(`
+      SELECT DISTINCT month_key FROM (
+        SELECT strftime('%Y-%m', transaction_date) as month_key FROM transactions
+        UNION
+        SELECT invoice_month as month_key FROM transactions WHERE invoice_month IS NOT NULL
+      )
+      WHERE month_key IS NOT NULL AND month_key <= ?
+      ORDER BY month_key DESC
+    `).all(currentKey).map(r => r.month_key);
+
+    const reserve = this.getReserveStatus(mKey, savedAmount);
 
     const achievements = [];
     if (savingsRate >= 20) {
       achievements.push(`Você poupou ${savingsRate}% de toda a sua renda este mês.`);
     }
-    if (expenseChangeMoM < 0) {
+    if (expenseChangeMoM < 0 && !isCurrentMonth) {
       achievements.push(`Seus gastos caíram ${Math.abs(expenseChangeMoM)}% em relação ao mês anterior.`);
     }
     if (savedAmount > 0) {
-      achievements.push(`Superávit acumulado de ${(savedAmount / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}.`);
+      achievements.push(`Superávit acumulado de ${formatBRL(savedAmount)}.`);
+    }
+    if (reserve.status !== 'not_configured' && reserve.monthContribution > 0) {
+      achievements.push(`Sua reserva cresceu ${formatBRL(reserve.monthContribution)} no mês.`);
+    }
+
+    const recommendations = [];
+    const operationalResult = savedAmount + reserve.monthAportes - reserve.monthResgates;
+    if (reserve.monthAportes > 0 || reserve.monthResgates > 0) {
+      recommendations.push({
+        type: operationalResult >= 0 ? 'info' : 'warning',
+        text: `Movimentos da reserva no mês: ${formatBRL(reserve.monthAportes)} aplicados e ${formatBRL(reserve.monthResgates)} resgatados. Desconsiderando-os, o resultado do dia a dia foi ${formatBRL(operationalResult)}.`,
+      });
+    } else if (savedAmount < 0) {
+      recommendations.push({
+        type: 'warning',
+        text: `O mês fechou em déficit de ${formatBRL(Math.abs(savedAmount))}. Evite novos parcelamentos até equilibrar o caixa.`,
+      });
+    }
+    if (isCurrentMonth && prevExpense > 0 && projectedExpenseTotal > prevExpense * 1.1) {
+      recommendations.push({
+        type: 'warning',
+        text: `No ritmo atual, os gastos devem fechar em ${formatBRL(projectedExpenseTotal)} — acima do mês anterior (${formatBRL(prevExpense)}).`,
+      });
+    }
+    const overspent = topCategories
+      .filter(c => c.changeVsAverage !== null && c.changeVsAverage >= 25 && c.total - c.averagePrevious >= 10000)
+      .sort((a, b) => (b.total - b.averagePrevious) - (a.total - a.averagePrevious))[0];
+    if (overspent) {
+      recommendations.push({
+        type: 'warning',
+        text: `${overspent.name} ficou ${overspent.changeVsAverage}% acima da sua média dos últimos meses (${formatBRL(overspent.total - overspent.averagePrevious)} a mais).`,
+      });
+    }
+    if (reserve.status !== 'not_configured' && reserve.suggestedContribution > 0) {
+      const eta = reserve.monthsToTarget
+        ? ` — nesse ritmo você atinge a meta em ~${reserve.monthsToTarget} ${reserve.monthsToTarget === 1 ? 'mês' : 'meses'}`
+        : '';
+      recommendations.push({
+        type: 'reserve',
+        text: `Separe ${formatBRL(reserve.suggestedContribution)} do superávit para a reserva${eta}.`,
+      });
+    } else if (reserve.status === 'complete' && savedAmount > 0) {
+      recommendations.push({
+        type: 'success',
+        text: `Reserva completa! Os ${formatBRL(savedAmount)} de superávit podem ir para metas ou investimentos de longo prazo.`,
+      });
+    }
+    if (uncategorizedCount > 0) {
+      recommendations.push({
+        type: 'info',
+        text: `${uncategorizedCount} ${uncategorizedCount === 1 ? 'despesa está' : 'despesas estão'} sem categoria. Categorize para o Pigo aprender e acertar nas próximas importações.`,
+      });
     }
 
     return {
       monthKey: mKey,
+      previousMonthKey: prevKey,
+      nextMonthKey: mKey < currentKey ? addMonthsToKey(mKey, 1) : null,
+      isCurrentMonth,
+      daysElapsed,
+      daysInMonth,
+      availableMonths,
       incomeTotal: income.total,
       incomeCount: income.count,
       expenseTotal: expense.total,
       expenseCount: expense.count,
+      projectedExpenseTotal,
       savedAmount,
       savingsRate,
       incomeChangeMoM,
@@ -1263,40 +1706,11 @@ class FinancialIntelligenceEngine {
         date: highestExpense.transaction_date,
         categoryName: highestExpense.category_name || 'Sem categoria',
       } : null,
+      uncategorizedCount,
+      reserve,
       achievements,
+      recommendations,
     };
-  }
-
-  // ==========================================
-  // 10. CONVERSÃO DE CANDIDATO RECORRENTE
-  // ==========================================
-  convertCandidateToRecurring(candidate) {
-    const crypto = require('crypto');
-    const id = `rec_${crypto.randomUUID()}`;
-    const today = new Date().toISOString().slice(0, 10);
-
-    const defaultAcc = this.db.prepare(`SELECT id FROM accounts WHERE active = 1 LIMIT 1`).get();
-    const accountId = defaultAcc ? defaultAcc.id : null;
-
-    this.db.prepare(`
-      INSERT INTO recurring_rules (
-        id, account_id, category_id, type, description, amount, frequency,
-        billing_day, start_date, next_due_date, auto_generate, active, created_at
-      ) VALUES (?, ?, ?, 'expense', ?, ?, ?, ?, ?, ?, 1, 1, ?)
-    `).run(
-      id,
-      accountId,
-      candidate.categoryId || null,
-      candidate.cleanDescription || candidate.rawDescription,
-      candidate.averageAmount,
-      candidate.suggestedFrequency || 'monthly',
-      candidate.suggestedBillingDay || 1,
-      today,
-      candidate.nextExpectedDate || today,
-      new Date().toISOString()
-    );
-
-    return { success: true, id };
   }
 
   // Consolidated Overview for UI
@@ -1306,7 +1720,7 @@ class FinancialIntelligenceEngine {
       forecast: this.getBalanceForecast(30),
       insights: this.getSmartInsights(),
       anomalies: this.detectAnomalies(),
-      recurringCandidates: this.detectRecurringPatterns(),
+      recurringCandidates: this.detectRecurringPatterns('expense'),
       cardsAnalysis: this.getCreditCardIntelligence(),
       goals: this.getGoalsIntelligence(),
       monthlyCloseout: this.getMonthlyCloseout(),
@@ -1316,6 +1730,7 @@ class FinancialIntelligenceEngine {
 
 module.exports = {
   FinancialIntelligenceEngine,
+  isReserveDescription,
   tokenizeText,
   cleanMerchantName,
   mean,

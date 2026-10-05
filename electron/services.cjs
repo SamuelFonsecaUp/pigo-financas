@@ -32,6 +32,16 @@ function addMonths(dateStr, monthsToAdd) {
   return `${year}-${formattedMonth}-${formattedDay}`;
 }
 
+function parseJsonArray(value) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 // Calculate which invoice a credit card purchase belongs to
 function calculateInvoiceMonth(transactionDate, closingDay) {
   const [yearStr, monthStr, dayStr] = transactionDate.split('-');
@@ -81,7 +91,9 @@ class FinancialService {
 
   get syncEngine() {
     if (!this._syncEngine) {
-      this._syncEngine = new CloudSyncEngine(this.db, this.cloudAuth);
+      this._syncEngine = new CloudSyncEngine(this.db, this.cloudAuth, {
+        getStatementsFolder: () => this.getStatementsFolderPath(),
+      });
     }
     return this._syncEngine;
   }
@@ -100,6 +112,11 @@ class FinancialService {
       dateFormat: row.date_format,
       autoBackupEnabled: Boolean(row.auto_backup_enabled),
       autoBackupDir: row.auto_backup_dir,
+      reserveTargetMonths: row.reserve_target_months || 6,
+      reserveAccountIds: parseJsonArray(row.reserve_account_ids),
+      reserveCategoryIds: parseJsonArray(row.reserve_category_ids),
+      reserveInitialAmount: row.reserve_initial_amount || 0,
+      reserveAutoDetect: row.reserve_auto_detect === null || row.reserve_auto_detect === undefined ? true : Boolean(row.reserve_auto_detect),
     };
   }
 
@@ -115,6 +132,26 @@ class FinancialService {
     if (data.dateFormat !== undefined) { fields.push('date_format = ?'); values.push(data.dateFormat); }
     if (data.autoBackupEnabled !== undefined) { fields.push('auto_backup_enabled = ?'); values.push(data.autoBackupEnabled ? 1 : 0); }
     if (data.autoBackupDir !== undefined) { fields.push('auto_backup_dir = ?'); values.push(data.autoBackupDir); }
+    if (data.reserveTargetMonths !== undefined) {
+      const months = Math.min(24, Math.max(1, parseInt(data.reserveTargetMonths, 10) || 6));
+      fields.push('reserve_target_months = ?'); values.push(months);
+    }
+    if (data.reserveAccountIds !== undefined) {
+      fields.push('reserve_account_ids = ?');
+      values.push(Array.isArray(data.reserveAccountIds) ? JSON.stringify(data.reserveAccountIds) : null);
+    }
+    if (data.reserveCategoryIds !== undefined) {
+      fields.push('reserve_category_ids = ?');
+      values.push(Array.isArray(data.reserveCategoryIds) ? JSON.stringify(data.reserveCategoryIds) : null);
+    }
+    if (data.reserveAutoDetect !== undefined) {
+      fields.push('reserve_auto_detect = ?');
+      values.push(data.reserveAutoDetect ? 1 : 0);
+    }
+    if (data.reserveInitialAmount !== undefined) {
+      fields.push('reserve_initial_amount = ?');
+      values.push(Math.max(0, parseInt(data.reserveInitialAmount, 10) || 0));
+    }
 
     if (fields.length > 0) {
       fields.push('updated_at = ?');
@@ -1118,215 +1155,6 @@ class FinancialService {
 
     runBatch();
     return { success: true, updatedCount };
-  }
-
-  // --- RECURRING RULES ---
-  getRecurringRules() {
-    const rows = this.db.prepare(`
-      SELECT 
-        r.*, 
-        a.name as account_name, 
-        a.color as account_color,
-        c.name as category_name,
-        c.color as category_color,
-        cc.name as credit_card_name,
-        cc.color as credit_card_color
-      FROM recurring_rules r
-      LEFT JOIN accounts a ON r.account_id = a.id
-      LEFT JOIN categories c ON r.category_id = c.id
-      LEFT JOIN credit_cards cc ON r.credit_card_id = cc.id
-      ORDER BY r.active DESC, r.next_due_date ASC
-    `).all();
-
-    return rows.map(r => ({
-      id: r.id,
-      accountId: r.account_id,
-      accountName: r.account_name,
-      accountColor: r.account_color,
-      categoryId: r.category_id,
-      categoryName: r.category_name,
-      categoryColor: r.category_color,
-      creditCardId: r.credit_card_id,
-      creditCardName: r.credit_card_name,
-      creditCardColor: r.credit_card_color,
-      type: r.type,
-      description: r.description,
-      amount: r.amount,
-      frequency: r.frequency,
-      billingDay: r.billing_day,
-      startDate: r.start_date,
-      nextDueDate: r.next_due_date,
-      autoGenerate: Boolean(r.auto_generate),
-      notes: r.notes,
-      active: Boolean(r.active),
-      createdAt: r.created_at,
-    }));
-  }
-
-  createRecurringRule(data) {
-    if (!data.description || !data.description.trim()) throw new Error('Descrição é obrigatória.');
-    const amount = parseInt(data.amount, 10);
-    if (isNaN(amount) || amount <= 0) throw new Error('Valor deve ser maior que zero.');
-
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
-    const billingDay = data.billingDay ? parseInt(data.billingDay, 10) : null;
-
-    this.db.prepare(`
-      INSERT INTO recurring_rules (
-        id, account_id, category_id, credit_card_id, type, description, amount, 
-        frequency, billing_day, start_date, next_due_date, auto_generate, notes, active, created_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-    `).run(
-      id,
-      data.accountId || null,
-      data.categoryId || null,
-      data.creditCardId || null,
-      data.type || 'expense',
-      data.description.trim(),
-      amount,
-      data.frequency || 'monthly',
-      billingDay,
-      data.startDate || now.slice(0, 10),
-      data.nextDueDate || data.startDate || now.slice(0, 10),
-      data.autoGenerate !== undefined ? (data.autoGenerate ? 1 : 0) : 1,
-      data.notes || null,
-      now
-    );
-
-    return this.getRecurringRules().find(r => r.id === id);
-  }
-
-  updateRecurringRule(id, data) {
-    const existing = this.getRecurringRules().find(r => r.id === id);
-    if (!existing) throw new Error('Regra recorrente não encontrada.');
-
-    const description = data.description !== undefined ? data.description.trim() : existing.description;
-    const amount = data.amount !== undefined ? parseInt(data.amount, 10) : existing.amount;
-    const type = data.type !== undefined ? data.type : existing.type;
-    const frequency = data.frequency !== undefined ? data.frequency : existing.frequency;
-    const billingDay = data.billingDay !== undefined ? parseInt(data.billingDay, 10) : existing.billingDay;
-    const nextDueDate = data.nextDueDate !== undefined ? data.nextDueDate : existing.nextDueDate;
-    const accountId = data.accountId !== undefined ? data.accountId : existing.accountId;
-    const categoryId = data.categoryId !== undefined ? data.categoryId : existing.categoryId;
-    const creditCardId = data.creditCardId !== undefined ? data.creditCardId : existing.creditCardId;
-    const autoGenerate = data.autoGenerate !== undefined ? (data.autoGenerate ? 1 : 0) : (existing.autoGenerate ? 1 : 0);
-    const active = data.active !== undefined ? (data.active ? 1 : 0) : (existing.active ? 1 : 0);
-    const notes = data.notes !== undefined ? data.notes : existing.notes;
-
-    this.db.prepare(`
-      UPDATE recurring_rules
-      SET description = ?, amount = ?, type = ?, frequency = ?, billing_day = ?,
-          next_due_date = ?, account_id = ?, category_id = ?, credit_card_id = ?,
-          auto_generate = ?, active = ?, notes = ?
-      WHERE id = ?
-    `).run(
-      description,
-      amount,
-      type,
-      frequency,
-      billingDay || null,
-      nextDueDate,
-      accountId || null,
-      categoryId || null,
-      creditCardId || null,
-      autoGenerate,
-      active,
-      notes || null,
-      id
-    );
-
-    return this.getRecurringRules().find(r => r.id === id);
-  }
-
-  toggleRecurringRule(id) {
-    const existing = this.getRecurringRules().find(r => r.id === id);
-    if (!existing) throw new Error('Regra recorrente não encontrada.');
-    const newActive = existing.active ? 0 : 1;
-    this.db.prepare(`UPDATE recurring_rules SET active = ? WHERE id = ?`).run(newActive, id);
-    return newActive === 1;
-  }
-
-  deleteRecurringRule(id) {
-    this.db.prepare(`DELETE FROM recurring_rules WHERE id = ?`).run(id);
-    return true;
-  }
-
-  // Execute recurring rule right now and advance next due date
-  executeRecurringNow(id) {
-    const rule = this.getRecurringRules().find(r => r.id === id);
-    if (!rule) throw new Error('Regra recorrente não encontrada.');
-
-    const tx = this.createTransaction({
-      accountId: rule.accountId,
-      categoryId: rule.categoryId,
-      creditCardId: rule.creditCardId,
-      type: rule.type,
-      description: rule.description,
-      amount: rule.amount,
-      transactionDate: rule.nextDueDate,
-      status: 'completed',
-      recurringId: rule.id,
-    });
-
-    let nextDate;
-    if (rule.frequency === 'weekly') {
-      const d = new Date(rule.nextDueDate);
-      d.setDate(d.getDate() + 7);
-      nextDate = d.toISOString().slice(0, 10);
-    } else if (rule.frequency === 'yearly') {
-      nextDate = addMonths(rule.nextDueDate, 12);
-    } else {
-      nextDate = addMonths(rule.nextDueDate, 1);
-    }
-
-    this.db.prepare(`UPDATE recurring_rules SET next_due_date = ? WHERE id = ?`).run(nextDate, rule.id);
-    return tx;
-  }
-
-  // Process due recurring transactions
-  processRecurringRules() {
-    const today = new Date().toISOString().slice(0, 10);
-    const dueRules = this.db.prepare(`
-      SELECT * FROM recurring_rules WHERE active = 1 AND auto_generate = 1 AND next_due_date <= ?
-    `).all(today);
-
-    let generatedCount = 0;
-    const runBatch = this.db.transaction(() => {
-      for (const rule of dueRules) {
-        this.createTransaction({
-          accountId: rule.account_id,
-          categoryId: rule.category_id,
-          creditCardId: rule.credit_card_id,
-          type: rule.type,
-          description: rule.description,
-          amount: rule.amount,
-          transactionDate: rule.next_due_date,
-          status: 'completed',
-          recurringId: rule.id,
-        });
-        generatedCount++;
-
-        let nextDate;
-        if (rule.frequency === 'weekly') {
-          const d = new Date(rule.next_due_date);
-          d.setDate(d.getDate() + 7);
-          nextDate = d.toISOString().slice(0, 10);
-        } else if (rule.frequency === 'yearly') {
-          nextDate = addMonths(rule.next_due_date, 12);
-        } else {
-          nextDate = addMonths(rule.next_due_date, 1);
-        }
-
-        this.db.prepare(`UPDATE recurring_rules SET next_due_date = ? WHERE id = ?`).run(nextDate, rule.id);
-      }
-    });
-
-    if (dueRules.length > 0) {
-      runBatch();
-    }
-    return generatedCount;
   }
 
   // --- GOALS ---
@@ -2472,6 +2300,79 @@ class FinancialService {
   }
 
   // --- BANK STATEMENT VAULT (OFX/CSV ARCHIVE) ---
+  // --- BACKUPS LOCAIS AUTOMÁTICOS ---
+  getUserDataPath() {
+    try {
+      const { app } = require('electron');
+      if (app && typeof app.getPath === 'function') return app.getPath('userData');
+    } catch (e) {}
+    return process.cwd();
+  }
+
+  getLocalBackupsFolder() {
+    const folder = path.join(this.getUserDataPath(), 'backups');
+    if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
+    return folder;
+  }
+
+  // Cópia consistente do SQLite (funciona com o banco aberto, inclusive em WAL)
+  async createLocalBackup(reason = 'manual') {
+    const folder = this.getLocalBackupsFolder();
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filePath = path.join(folder, `pigo_${stamp}_${reason}.sqlite`);
+    await this.db.backup(filePath);
+
+    this.pruneBackups(folder);
+
+    // Cópia extra na pasta escolhida pelo usuário (ex.: OneDrive, pendrive)
+    const settings = this.db.prepare(`SELECT auto_backup_enabled, auto_backup_dir FROM settings WHERE id = 'app_config'`).get();
+    if (settings && settings.auto_backup_enabled && settings.auto_backup_dir) {
+      try {
+        if (!fs.existsSync(settings.auto_backup_dir)) fs.mkdirSync(settings.auto_backup_dir, { recursive: true });
+        fs.copyFileSync(filePath, path.join(settings.auto_backup_dir, path.basename(filePath)));
+        this.pruneBackups(settings.auto_backup_dir);
+      } catch (e) {
+        console.warn('[Backup] Could not copy to custom folder:', e.message);
+      }
+    }
+
+    return { filePath, createdAt: new Date().toISOString() };
+  }
+
+  // Mantém os 7 backups diários e os 5 de segurança (antes de restaurações) mais recentes
+  pruneBackups(folder) {
+    const files = fs.readdirSync(folder).filter(f => /^pigo_.*\.sqlite$/.test(f)).sort().reverse();
+    const keep = { daily: 7, other: 5 };
+    const counts = { daily: 0, other: 0 };
+    for (const f of files) {
+      const kind = f.endsWith('_daily.sqlite') ? 'daily' : 'other';
+      counts[kind]++;
+      if (counts[kind] > keep[kind]) {
+        try { fs.unlinkSync(path.join(folder, f)); } catch (e) {}
+      }
+    }
+  }
+
+  listLocalBackups() {
+    const folder = this.getLocalBackupsFolder();
+    return fs.readdirSync(folder)
+      .filter(f => /^pigo_.*\.sqlite$/.test(f))
+      .map(f => {
+        const stat = fs.statSync(path.join(folder, f));
+        const reason = (f.match(/_([a-z-]+)\.sqlite$/) || [])[1] || 'manual';
+        return { fileName: f, filePath: path.join(folder, f), size: stat.size, createdAt: stat.mtime.toISOString(), reason };
+      })
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  // Um backup por dia, feito na primeira abertura do app
+  async runDailyBackupIfDue() {
+    const today = new Date().toISOString().slice(0, 10);
+    const hasToday = this.listLocalBackups().some(b => b.reason === 'daily' && b.createdAt.slice(0, 10) === today);
+    if (hasToday) return null;
+    return this.createLocalBackup('daily');
+  }
+
   getStatementsFolderPath() {
     let userDataPath = process.cwd();
     try {
@@ -2947,7 +2848,6 @@ class FinancialService {
     const categories = this.db.prepare(`SELECT * FROM categories`).all();
     const creditCards = this.db.prepare(`SELECT * FROM credit_cards`).all();
     const transactions = this.db.prepare(`SELECT * FROM transactions`).all();
-    const recurringRules = this.db.prepare(`SELECT * FROM recurring_rules`).all();
     const goals = this.db.prepare(`SELECT * FROM goals`).all();
 
     const backupData = {
@@ -2960,7 +2860,6 @@ class FinancialService {
         categories,
         creditCards,
         transactions,
-        recurringRules,
         goals,
       },
     };
@@ -3041,17 +2940,6 @@ class FinancialService {
             t.status, t.notes, t.recurring_id, t.installment_id, t.installment_number, t.total_installments,
             t.is_demo || 0, t.created_at, t.updated_at
           );
-        }
-      }
-
-      // Restore recurring rules
-      if (tables.recurringRules && tables.recurringRules.length > 0) {
-        const stmt = this.db.prepare(`
-          INSERT INTO recurring_rules (id, account_id, category_id, credit_card_id, type, description, amount, frequency, start_date, next_due_date, active, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
-        for (const r of tables.recurringRules) {
-          stmt.run(r.id, r.account_id, r.category_id, r.credit_card_id, r.type, r.description, r.amount, r.frequency, r.start_date, r.next_due_date, r.active, r.created_at);
         }
       }
 
@@ -3340,6 +3228,55 @@ class FinancialService {
     return this.intelligence.detectRecurringPatterns();
   }
 
+  // --- RESERVA FINANCEIRA ---
+  getReserveOverview(monthKey) {
+    return this.intelligence.getReserveOverview(monthKey);
+  }
+
+  // Marca/desmarca um lançamento detectado como movimento da reserva
+  setReserveTransactionExcluded(transactionId, excluded) {
+    const row = this.db.prepare(`SELECT reserve_excluded_tx_ids FROM settings WHERE id = 'app_config'`).get();
+    const ids = new Set(parseJsonArray(row && row.reserve_excluded_tx_ids) || []);
+    if (excluded) ids.add(transactionId); else ids.delete(transactionId);
+    this.db.prepare(`UPDATE settings SET reserve_excluded_tx_ids = ?, updated_at = ? WHERE id = 'app_config'`)
+      .run(JSON.stringify([...ids]), new Date().toISOString());
+    return true;
+  }
+
+  // Registra um aporte (dinheiro indo para a reserva) ou resgate (voltando)
+  registerReserveMovement(data) {
+    const amount = parseInt(data.amount, 10);
+    if (!amount || amount <= 0) throw new Error('Informe um valor maior que zero.');
+    if (!data.accountId) throw new Error('Selecione a conta corrente usada no movimento.');
+    const isAporte = data.kind !== 'resgate';
+    const transactionDate = data.date || new Date().toISOString().slice(0, 10);
+
+    if (data.reserveAccountId) {
+      // Reserva controlada como conta no app: vira transferência
+      return this.createTransaction({
+        type: 'transfer',
+        accountId: isAporte ? data.accountId : data.reserveAccountId,
+        destinationAccountId: isAporte ? data.reserveAccountId : data.accountId,
+        description: data.description || (isAporte ? 'Aporte para reserva' : 'Resgate da reserva'),
+        amount,
+        transactionDate,
+        status: 'completed',
+      });
+    }
+
+    // Reserva fora do app (CDB, caixinha): saída/entrada na conta com a categoria de reserva
+    const categoryId = data.categoryId || this.intelligence.getReserveCategories()[0]?.id || 'cat_investimentos';
+    return this.createTransaction({
+      type: isAporte ? 'expense' : 'income',
+      accountId: data.accountId,
+      categoryId,
+      description: data.description || (isAporte ? 'Aplicação reserva' : 'Resgate reserva'),
+      amount,
+      transactionDate,
+      status: 'completed',
+    });
+  }
+
   getCreditCardIntelligence() {
     return this.intelligence.getCreditCardIntelligence();
   }
@@ -3352,21 +3289,20 @@ class FinancialService {
     return this.intelligence.getMonthlyCloseout(yearMonth);
   }
 
-  convertCandidateToRecurring(candidate) {
-    return this.intelligence.convertCandidateToRecurring(candidate);
-  }
 
   // --- CLOUD AUTH & SYNC (SUPABASE / LOCAL-FIRST) ---
   getCloudSession() {
-    return this.cloudAuth.getSession();
+    return this.cloudAuth.getPublicSession();
   }
 
-  cloudSignIn(email, password, config) {
-    return this.cloudAuth.signIn(email, password, config);
+  async cloudSignIn(email, password, config) {
+    const res = await this.cloudAuth.signIn(email, password, config);
+    return { ...res, session: this.cloudAuth.getPublicSession() };
   }
 
-  cloudSignUp(email, password, config) {
-    return this.cloudAuth.signUp(email, password, config);
+  async cloudSignUp(email, password, config) {
+    const res = await this.cloudAuth.signUp(email, password, config);
+    return res.session ? { ...res, session: this.cloudAuth.getPublicSession() } : res;
   }
 
   cloudSignOut() {
@@ -3377,8 +3313,12 @@ class FinancialService {
     return this.cloudAuth.updateConfig(supabaseUrl, supabaseAnonKey);
   }
 
-  triggerCloudSync() {
-    return this.syncEngine.sync();
+  triggerCloudSync(options) {
+    return this.syncEngine.sync(options);
+  }
+
+  getCloudPendingCount() {
+    return this.syncEngine.getPendingCount();
   }
 
   cloudFullPull() {

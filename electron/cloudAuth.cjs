@@ -5,6 +5,49 @@
  * e permitindo alternar de modo 100% offline para nuvem com fluidez total.
  */
 
+const { SYNC_TABLES, withSyncSuppressed } = require('./database.cjs');
+
+// Renova o token um pouco antes de expirar para evitar requisições rejeitadas
+const TOKEN_REFRESH_MARGIN_MS = 2 * 60 * 1000;
+
+class AuthExpiredError extends Error {
+  constructor(message = 'Sua sessão na nuvem expirou. Entre novamente com seu e-mail e senha para voltar a sincronizar.') {
+    super(message);
+    this.name = 'AuthExpiredError';
+    this.code = 'auth_expired';
+  }
+}
+
+// Criptografia dos tokens em repouso. No Electron usa safeStorage (DPAPI no Windows);
+// fora dele (testes) os tokens ficam em texto puro.
+const ENCRYPTED_PREFIX = 'enc:v1:';
+let tokenCipher = null;
+
+function setTokenCipher(cipher) {
+  tokenCipher = cipher;
+}
+
+function encryptToken(value) {
+  if (!value || !tokenCipher) return value;
+  try {
+    return ENCRYPTED_PREFIX + tokenCipher.encrypt(value);
+  } catch (e) {
+    console.warn('[CloudAuth] Token encryption unavailable:', e.message);
+    return value;
+  }
+}
+
+function decryptToken(value) {
+  if (!value || !String(value).startsWith(ENCRYPTED_PREFIX)) return value || null;
+  if (!tokenCipher) return null;
+  try {
+    return tokenCipher.decrypt(String(value).slice(ENCRYPTED_PREFIX.length));
+  } catch (e) {
+    // Token cifrado por outro usuário/máquina: exige novo login
+    return null;
+  }
+}
+
 const DEFAULT_SUPABASE_URL = 'https://pkmedbjdxvwafvofgnrj.supabase.co';
 const DEFAULT_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBrbWVkYmpkeHZ3YWZ2b2ZnbnJqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk0MTM5NDcsImV4cCI6MjEwNDk4OTk0N30.KXB0RLjKH3TV6_WhUES1-rxpz5ZymSf2b2AnKYrZcjk';
 
@@ -32,8 +75,8 @@ class CloudAuth {
     return {
       userId: row.user_id,
       email: row.email,
-      accessToken: row.access_token,
-      refreshToken: row.refresh_token,
+      accessToken: decryptToken(row.access_token),
+      refreshToken: decryptToken(row.refresh_token),
       expiresAt: row.expires_at,
       supabaseUrl: row.supabase_url || DEFAULT_SUPABASE_URL,
       supabaseAnonKey: row.supabase_anon_key || DEFAULT_SUPABASE_ANON_KEY,
@@ -69,8 +112,8 @@ class CloudAuth {
       `).run(
         data.userId || null,
         data.email || null,
-        data.accessToken || null,
-        data.refreshToken || null,
+        encryptToken(data.accessToken) || null,
+        encryptToken(data.refreshToken) || null,
         data.expiresAt || null,
         supabaseUrl,
         supabaseAnonKey,
@@ -89,8 +132,8 @@ class CloudAuth {
       `).run(
         data.userId || null,
         data.email || null,
-        data.accessToken || null,
-        data.refreshToken || null,
+        encryptToken(data.accessToken) || null,
+        encryptToken(data.refreshToken) || null,
         data.expiresAt || null,
         supabaseUrl,
         supabaseAnonKey,
@@ -140,6 +183,71 @@ class CloudAuth {
     `).run(new Date().toISOString());
 
     return { success: true };
+  }
+
+  // Re-save plain-text tokens from older versions in encrypted form
+  encryptStoredTokens() {
+    const row = this.db.prepare(`SELECT access_token, refresh_token FROM cloud_session WHERE id = 'current_session'`).get();
+    if (!row || !tokenCipher) return;
+    const needs = (v) => v && !String(v).startsWith(ENCRYPTED_PREFIX);
+    if (!needs(row.access_token) && !needs(row.refresh_token)) return;
+    this.db.prepare(`UPDATE cloud_session SET access_token = ?, refresh_token = ? WHERE id = 'current_session'`).run(
+      needs(row.access_token) ? encryptToken(row.access_token) : row.access_token,
+      needs(row.refresh_token) ? encryptToken(row.refresh_token) : row.refresh_token
+    );
+  }
+
+  // Session data safe to hand to the renderer (no tokens)
+  getPublicSession() {
+    const { accessToken, refreshToken, ...rest } = this.getSession();
+    return rest;
+  }
+
+  // Exchange the stored refresh token for a new access token
+  async refreshSession() {
+    const current = this.getSession();
+    if (!current.userId || !current.refreshToken) {
+      throw new AuthExpiredError();
+    }
+
+    const supabaseUrl = current.supabaseUrl.replace(/\/$/, '');
+    // A network failure throws here and keeps the stored session intact
+    const res = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': current.supabaseAnonKey,
+      },
+      body: JSON.stringify({ refresh_token: current.refreshToken }),
+    });
+
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.access_token) {
+      if (res.status >= 400 && res.status < 500) {
+        throw new AuthExpiredError();
+      }
+      throw new Error(body.error_description || body.msg || `Falha ao renovar sessão (${res.status}).`);
+    }
+
+    return this.saveSession({
+      accessToken: body.access_token,
+      refreshToken: body.refresh_token,
+      expiresAt: body.expires_at ? body.expires_at * 1000 : Date.now() + (body.expires_in || 3600) * 1000,
+      supabaseUrl: current.supabaseUrl,
+      supabaseAnonKey: current.supabaseAnonKey,
+    });
+  }
+
+  // Return a session whose access token is valid, refreshing it when needed
+  async getValidSession({ forceRefresh = false } = {}) {
+    const session = this.getSession();
+    if (!session.userId || !session.accessToken) return session;
+
+    const expiresAt = Number(session.expiresAt) || 0;
+    if (forceRefresh || expiresAt - TOKEN_REFRESH_MARGIN_MS <= Date.now()) {
+      return this.refreshSession();
+    }
+    return session;
   }
 
   // Authenticate with Supabase Auth API
@@ -257,33 +365,26 @@ class CloudAuth {
   // Associate existing local rows with user_id and mark for sync
   associateLocalDataWithUser(userId) {
     if (!userId) return;
-    const tables = [
-      'categories',
-      'accounts',
-      'credit_cards',
-      'imported_statements',
-      'transactions',
-      'recurring_rules',
-      'goals',
-      'category_budgets',
-      'import_rules',
-    ];
-    for (const t of tables) {
-      try {
-        this.db.prepare(`
-          UPDATE ${t}
-          SET user_id = ?, sync_status = 'pending'
-          WHERE user_id IS NULL OR user_id = '' OR user_id = ?
-        `).run(userId, userId);
-      } catch (e) {
-        console.error(`[CloudAuth] Error associating table ${t}:`, e.message);
+    withSyncSuppressed(this.db, () => {
+      for (const t of SYNC_TABLES) {
+        try {
+          this.db.prepare(`
+            UPDATE ${t}
+            SET user_id = ?, sync_status = 'pending'
+            WHERE user_id IS NULL OR user_id = '' OR user_id = ?
+          `).run(userId, userId);
+        } catch (e) {
+          console.error(`[CloudAuth] Error associating table ${t}:`, e.message);
+        }
       }
-    }
+    });
   }
 }
 
 module.exports = {
   CloudAuth,
+  setTokenCipher,
+  AuthExpiredError,
   DEFAULT_SUPABASE_URL,
   DEFAULT_SUPABASE_ANON_KEY,
 };

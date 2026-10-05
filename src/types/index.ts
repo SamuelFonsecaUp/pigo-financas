@@ -109,30 +109,6 @@ export interface Transaction {
   updatedAt: string;
 }
 
-export interface RecurringRule {
-  id: string;
-  accountId?: string;
-  accountName?: string;
-  accountColor?: string;
-  categoryId?: string;
-  categoryName?: string;
-  categoryColor?: string;
-  creditCardId?: string;
-  creditCardName?: string;
-  creditCardColor?: string;
-  type: 'income' | 'expense';
-  description: string;
-  amount: number;
-  frequency: 'monthly' | 'weekly' | 'yearly';
-  billingDay?: number;
-  startDate: string;
-  nextDueDate: string;
-  autoGenerate: boolean;
-  notes?: string;
-  active: boolean;
-  createdAt: string;
-}
-
 export interface CategoryBudget {
   id: string;
   categoryId: string;
@@ -348,6 +324,11 @@ export interface Settings {
   dateFormat: string;
   autoBackupEnabled: boolean;
   autoBackupDir?: string;
+  reserveTargetMonths?: number;
+  reserveAccountIds?: string[] | null;
+  reserveCategoryIds?: string[] | null;
+  reserveInitialAmount?: number;
+  reserveAutoDetect?: boolean;
 }
 
 export interface DashboardData {
@@ -520,6 +501,8 @@ export interface CategorySuggestion {
 
 export interface RecurringCandidate {
   id: string;
+  type: 'income' | 'expense';
+  isActive: boolean;
   rawDescription: string;
   cleanDescription: string;
   averageAmount: number;
@@ -570,12 +553,76 @@ export interface GoalIntelligence {
   status: 'completed' | 'on_track' | 'at_risk';
 }
 
+export interface ReserveAccountInfo {
+  id: string;
+  name: string;
+  type: string;
+  color: string;
+  balance: number;
+  isReserve: boolean;
+}
+
+export interface ReserveMovement {
+  id: string;
+  date: string;
+  description: string;
+  amount: number;
+  kind: 'aporte' | 'resgate';
+  source: 'category' | 'detected' | 'transfer';
+  accountName: string | null;
+  categoryName: string | null;
+  countsInBalance: boolean;
+  excluded: boolean;
+}
+
+export interface ReserveStatus {
+  status: 'not_configured' | 'critical' | 'building' | 'good' | 'complete';
+  message: string;
+  monthKey: string;
+  targetMonths: number;
+  initialAmount: number;
+  initialAmountEstimated: boolean;
+  autoDetect: boolean;
+  usingDefaultAccounts: boolean;
+  usingDefaultCategories: boolean;
+  accounts: ReserveAccountInfo[];
+  categories: { id: string; name: string; color: string; monthTotal: number; isReserve: boolean }[];
+  balance: number;
+  previousBalance: number;
+  monthContribution: number;
+  monthAportes: number;
+  monthResgates: number;
+  averageContribution: number;
+  monthlyCost: number;
+  targetAmount: number;
+  gap: number;
+  coverageMonths: number;
+  progressPercent: number;
+  suggestedContribution: number;
+  monthsToTarget: number | null;
+  estimatedCompletion: string | null;
+  history: { monthKey: string; balance: number; target: number; aportes: number; resgates: number }[];
+  movements: ReserveMovement[];
+}
+
+export interface CloseoutRecommendation {
+  type: 'warning' | 'reserve' | 'success' | 'info';
+  text: string;
+}
+
 export interface MonthlyCloseoutReport {
   monthKey: string;
+  previousMonthKey: string;
+  nextMonthKey: string | null;
+  isCurrentMonth: boolean;
+  daysElapsed: number;
+  daysInMonth: number;
+  availableMonths: string[];
   incomeTotal: number;
   incomeCount: number;
   expenseTotal: number;
   expenseCount: number;
+  projectedExpenseTotal: number;
   savedAmount: number;
   savingsRate: number;
   incomeChangeMoM: number;
@@ -588,6 +635,8 @@ export interface MonthlyCloseoutReport {
     total: number;
     count: number;
     percentage: number;
+    averagePrevious: number;
+    changeVsAverage: number | null;
   }[];
   highestExpense?: {
     description: string;
@@ -595,7 +644,10 @@ export interface MonthlyCloseoutReport {
     date: string;
     categoryName: string;
   } | null;
+  uncategorizedCount: number;
+  reserve: ReserveStatus;
   achievements: string[];
+  recommendations: CloseoutRecommendation[];
 }
 
 export interface IntelligenceOverviewData {
@@ -670,14 +722,6 @@ export interface ElectronAPI {
     targetType?: 'account' | 'card';
   }) => Promise<{ success: boolean; updatedCount: number }>;
 
-  // Recurring Rules
-  getRecurringRules: () => Promise<RecurringRule[]>;
-  createRecurringRule: (data: any) => Promise<RecurringRule>;
-  updateRecurringRule: (id: string, data: any) => Promise<RecurringRule>;
-  toggleRecurringRule: (id: string) => Promise<boolean>;
-  deleteRecurringRule: (id: string) => Promise<boolean>;
-  executeRecurringNow: (id: string) => Promise<any>;
-  processRecurringRules: () => Promise<number>;
 
   // Category Budgets
   getCategoryBudgets: (monthKey?: string) => Promise<CategoryBudget[]>;
@@ -731,8 +775,18 @@ export interface ElectronAPI {
   detectRecurringPatterns: () => Promise<RecurringCandidate[]>;
   getCreditCardIntelligence: () => Promise<CardIntelligenceData[]>;
   getGoalsIntelligence: () => Promise<GoalIntelligence[]>;
+  getReserveOverview: (monthKey?: string) => Promise<ReserveStatus>;
+  setReserveTransactionExcluded: (transactionId: string, excluded: boolean) => Promise<boolean>;
+  registerReserveMovement: (data: {
+    kind: 'aporte' | 'resgate';
+    amount: number;
+    date: string;
+    accountId: string;
+    reserveAccountId?: string | null;
+    categoryId?: string | null;
+    description?: string;
+  }) => Promise<any>;
   getMonthlyCloseout: (yearMonth?: string) => Promise<MonthlyCloseoutReport>;
-  convertCandidateToRecurring: (candidate: any) => Promise<{ success: boolean; id: string }>;
 
   // Cloud Auth & Sync (Supabase / Local-First)
   getCloudSession: () => Promise<CloudSession>;
@@ -740,8 +794,20 @@ export interface ElectronAPI {
   cloudSignUp: (email: string, password: string, config?: any) => Promise<any>;
   cloudSignOut: () => Promise<{ success: boolean }>;
   updateCloudConfig: (supabaseUrl: string, supabaseAnonKey: string) => Promise<CloudSession>;
-  triggerCloudSync: () => Promise<SyncResult>;
+  triggerCloudSync: (options?: { fullResync?: boolean }) => Promise<SyncResult>;
+  getCloudPendingCount: () => Promise<number>;
   cloudFullPull: () => Promise<{ success: boolean; totalRestored: number; timestamp: string }>;
+
+  getAppVersion: () => Promise<{ version: string; canAutoUpdate: boolean }>;
+  checkForUpdates: () => Promise<{ state: 'unavailable' | 'up_to_date' | 'downloading'; version?: string }>;
+  installUpdate: () => Promise<boolean>;
+  onUpdateStatus: (callback: (status: AppUpdateStatus) => void) => () => void;
+
+  listLocalBackups: () => Promise<{ folder: string; backups: LocalBackupInfo[] }>;
+  createBackupNow: () => Promise<{ filePath: string; createdAt: string }>;
+  openBackupsFolder: () => Promise<string>;
+  chooseBackupFolder: () => Promise<string | null>;
+  restoreLocalBackup: (fileName: string) => Promise<boolean>;
 
   exportBackupDialog: () => Promise<{ success: boolean; filePath?: string; canceled?: boolean }>;
   restoreBackupDialog: () => Promise<{ success: boolean; canceled?: boolean }>;
@@ -762,11 +828,33 @@ export interface CloudSession {
   syncEnabled: boolean;
 }
 
+export type SyncStatus = 'synced' | 'offline' | 'local_only' | 'syncing' | 'error' | 'auth_expired';
+
+export interface AppUpdateStatus {
+  state: 'downloading' | 'ready';
+  version: string;
+}
+
+export interface LocalBackupInfo {
+  fileName: string;
+  filePath: string;
+  size: number;
+  createdAt: string;
+  reason: string;
+}
+
 export interface SyncResult {
-  status: 'synced' | 'offline' | 'local_only' | 'syncing' | 'error';
+  status: SyncStatus;
   message?: string;
+  errors?: string[];
   pushedCount?: number;
   pulledCount?: number;
+  deletedCount?: number;
+  pendingCount?: number;
+  featuresMissing?: string[];
+  filesUploaded?: number;
+  filesDownloaded?: number;
+  code?: string;
   lastSyncAt?: string | null;
   timestamp?: string;
 }

@@ -24,6 +24,10 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({ isOpen, onClose 
     refreshCloudSession,
     triggerSync,
     isSyncing,
+    syncStatus,
+    syncMessage,
+    pendingSyncCount,
+    cloudFeaturesMissing,
     showToast,
     refreshAll,
   } = useFinancial();
@@ -36,7 +40,10 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({ isOpen, onClose 
 
   if (!isOpen) return null;
 
-  const isLoggedIn = Boolean(cloudSession?.userId);
+  // Session expired: show the login form again (local pending changes are kept)
+  const needsReauth = syncStatus === 'auth_expired';
+  const isLoggedIn = Boolean(cloudSession?.userId) && !needsReauth;
+  const loginEmail = email || (needsReauth ? cloudSession?.email || '' : '');
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,18 +52,19 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({ isOpen, onClose 
 
     try {
       if (!window.electronAPI) return;
-      const res = await window.electronAPI.cloudSignIn(email, password);
+      const res = await window.electronAPI.cloudSignIn(loginEmail, password);
 
       showToast(`Bem-vindo, ${res.user.email}! Carregando seus dados...`, 'info');
       await refreshCloudSession();
-      try {
-        await window.electronAPI.cloudFullPull();
-      } catch (pullErr) {
-        console.warn('Initial pull:', pullErr);
-      }
-      await triggerSync();
+      // Download everything from the cloud, then upload what only exists here
+      const syncRes = await triggerSync({ fullResync: true });
       await refreshAll();
-      showToast('Nuvem conectada e dados sincronizados com sucesso!', 'success');
+      if (syncRes?.status === 'synced') {
+        showToast('Nuvem conectada e dados sincronizados com sucesso!', 'success');
+      } else if (syncRes?.message) {
+        showToast(syncRes.message, 'error');
+      }
+      setPassword('');
       onClose();
     } catch (err: any) {
       setErrorMsg(err.message || 'Falha ao autenticar.');
@@ -72,7 +80,7 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({ isOpen, onClose 
 
     try {
       if (!window.electronAPI) return;
-      const res = await window.electronAPI.cloudSignUp(email, password);
+      const res = await window.electronAPI.cloudSignUp(loginEmail, password);
 
       if (res.confirmed) {
         showToast('Conta criada com sucesso e conectada!', 'success');
@@ -102,23 +110,22 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({ isOpen, onClose 
     }
   };
 
-  const handleFullPull = async () => {
-    if (!window.electronAPI) return;
+  const handleFullResync = async () => {
     setLoading(true);
     try {
-      const res = await window.electronAPI.cloudFullPull();
-      showToast(`Restauração concluída! ${res.totalRestored} registros baixados da nuvem.`, 'success');
-      await refreshAll();
-      await refreshCloudSession();
-    } catch (err: any) {
-      showToast(`Erro na restauração: ${err.message || err}`, 'error');
+      const res = await triggerSync({ fullResync: true });
+      if (res?.status === 'synced') {
+        showToast(`Ressincronização completa! ${res.pulledCount || 0} registros conferidos com a nuvem.`, 'success');
+      } else if (res?.message) {
+        showToast(res.message, res.status === 'offline' ? 'info' : 'error');
+      }
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Sincronização em Nuvem" maxWidth="max-w-lg">
+    <Modal isOpen={isOpen} onClose={onClose} title="Sincronização em Nuvem" maxWidth="lg">
       <div className="space-y-5">
         {/* Offline First Guarantee Banner */}
         <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center gap-3 text-xs text-slate-300">
@@ -144,7 +151,7 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({ isOpen, onClose 
                 </div>
                 <span className="text-[11px] text-slate-400">
                   {cloudSession?.lastSyncAt
-                    ? `Último sync: ${new Date(cloudSession.lastSyncAt).toLocaleTimeString('pt-BR')}`
+                    ? `Último sync: ${new Date(cloudSession.lastSyncAt).toLocaleString('pt-BR')}`
                     : 'Ainda não sincronizado'}
                 </span>
               </div>
@@ -158,7 +165,30 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({ isOpen, onClose 
                 <Shield className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                 <span>Conexão criptografada e segura com a nuvem</span>
               </div>
+
+              <div className="text-[11px] text-slate-400">
+                {pendingSyncCount > 0
+                  ? `${pendingSyncCount} ${pendingSyncCount === 1 ? 'alteração aguardando' : 'alterações aguardando'} envio. Sincroniza automaticamente a cada 3 minutos e ao fechar o app.`
+                  : 'Tudo enviado. Sincroniza automaticamente a cada 3 minutos e ao fechar o app.'}
+              </div>
             </div>
+
+            {cloudFeaturesMissing.length > 0 && (
+              <div className="p-3 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sky-200 text-xs flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-sky-400 mt-0.5" />
+                <span>
+                  Sincronização de {cloudFeaturesMissing.map(f => (f === 'user_settings' ? 'configurações' : 'arquivos de extrato')).join(' e ')} desativada:
+                  rode uma vez o arquivo <strong>supabase/migrations/20261005_sync_melhorias.sql</strong> no SQL Editor do Supabase.
+                </span>
+              </div>
+            )}
+
+            {syncStatus === 'error' && syncMessage && (
+              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+                <span className="break-words">{syncMessage}</span>
+              </div>
+            )}
 
             {/* Actions for Logged In User */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -171,6 +201,8 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({ isOpen, onClose 
                     await refreshAll();
                   } else if (res?.status === 'offline') {
                     showToast('Sem conexão de internet no momento.', 'info');
+                  } else if (res?.message) {
+                    showToast(res.message, 'error');
                   }
                 }}
                 className="flex items-center justify-center gap-2 px-4 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white rounded-xl text-xs font-semibold transition-all shadow-sm"
@@ -181,12 +213,12 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({ isOpen, onClose 
 
               <button
                 disabled={isSyncing || loading}
-                onClick={handleFullPull}
+                onClick={handleFullResync}
                 className="flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-850 hover:bg-slate-800 disabled:opacity-50 text-slate-200 rounded-xl text-xs font-semibold border border-slate-750 transition-all"
-                title="Use para restaurar todos os dados da nuvem neste computador"
+                title="Confere todos os registros com a nuvem: baixa o que falta aqui e envia o que só existe neste computador"
               >
                 <DownloadCloud className="w-3.5 h-3.5 text-brand-400" />
-                Baixar da Nuvem
+                Ressincronizar Tudo
               </button>
             </div>
 
@@ -203,6 +235,16 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({ isOpen, onClose 
         ) : (
           /* Login / Register Form */
           <div className="space-y-4">
+            {needsReauth && (
+              <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+                <span>
+                  Sua sessão na nuvem expirou. Entre novamente para voltar a sincronizar.
+                  {pendingSyncCount > 0 && ` Suas ${pendingSyncCount} alterações locais estão guardadas e serão enviadas.`}
+                </span>
+              </div>
+            )}
+
             {/* Tabs */}
             <div className="flex bg-slate-950/80 p-1 rounded-xl border border-slate-850">
               <button
@@ -247,7 +289,7 @@ export const CloudAuthModal: React.FC<CloudAuthModalProps> = ({ isOpen, onClose 
                     type="email"
                     required
                     placeholder="seu@email.com"
-                    value={email}
+                    value={loginEmail}
                     onChange={(e) => setEmail(e.target.value)}
                     className="w-full bg-slate-950/80 border border-slate-800 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-brand-500"
                   />

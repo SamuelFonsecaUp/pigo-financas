@@ -37,6 +37,8 @@ import { CustomSelect } from '../components/CustomSelect';
 import { ImportRulesModal } from './ImportRulesModal';
 import { ImportedStatement } from '../types';
 import { formatCurrency } from '../utils/formatters';
+import { LocalBackupsCard } from '../components/LocalBackupsCard';
+import { AppVersionCard } from '../components/AppUpdate';
 
 export const SettingsView: React.FC = () => {
   const {
@@ -565,6 +567,10 @@ export const SettingsView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      <LocalBackupsCard />
+
+      <AppVersionCard />
 
       {/* 5. Bank Statements Vault (OFX / CSV) */}
       <div className="p-6 rounded-2xl bg-slate-900/60 border border-slate-800/80 space-y-4">

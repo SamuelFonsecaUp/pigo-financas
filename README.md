@@ -44,11 +44,15 @@ Diferente de sistemas web comuns que travam sem internet ou vendem seus dados, o
 - Paleta **Dark Glassmorphic** sob medida para redução da fadiga visual e visual moderno.
 - Paleta **Light Clean** com contrastes nítidos e superfícies claras para ambientes bem iluminados.
 
-### 🔁 Lançamentos Recorrentes com Inteligência de Histórico
-- **Detecção Automática de Recorrências**: O Pigo analisa seu histórico de extratos e identifica despesas que se repetem com frequência e valores semelhantes (ex: Netflix, Spotify, Condomínio, Aluguel, Provedor de Internet).
-- **Puxar do Histórico em Tempo Real**: Ao digitar o nome de uma despesa ou receita, o Pigo busca instantaneamente se você já fez lançamentos semelhantes no passado.
-- **Preenchimento em 1 Clique**: Sugere e preenche automaticamente o valor médio, categoria, forma de pagamento (conta ou cartão) e o dia do vencimento com base no histórico.
-- **Automação de Vencimentos**: Gera as transações automaticamente na data certa ou sob seu comando manual.
+### 🔁 Recorrências Aprendidas dos Extratos
+- **Sem cadastro manual**: o foco é importar OFX/CSV. O Pigo analisa o histórico e identifica sozinho despesas e receitas que se repetem (Netflix, condomínio, aluguel, salário...).
+- **Mais extratos, mais precisão**: os padrões aprendidos alimentam a previsão de saldo e o score de custos fixos automaticamente.
+
+### 🛟 Reserva Financeira no Fechamento do Mês
+- Escolha as contas (poupança, CDB, caixinha) e/ou as categorias em que você lança aportes (ex.: "Investimentos") e informe o saldo que já existia fora do app.
+- Meta dinâmica em meses de custo de vida (3, 6, 9 ou 12), calculada pela média real dos seus gastos — sem contar os próprios aportes.
+- Mostra aporte do mês, média recente, cobertura em meses, previsão para completar e sugere quanto do superávit separar.
+- Fechamento navegável mês a mês, com comparação de cada categoria contra a sua média dos 3 meses anteriores.
 
 ### 🏦 Gestão de Contas Bancárias e Carteiras
 - Controle completo de contas correntes, poupança, carteiras digitais, investimentos e dinheiro vivo.
@@ -93,7 +97,7 @@ Diferente de sistemas web comuns que travam sem internet ou vendem seus dados, o
 O Pigo possui um motor de inteligência financeira integrado que opera **100% offline**:
 
 1. **Score de Saúde Financeira (0 a 100)**: Analisa taxa de poupança, comprometimento de renda fixa, uso do limite de crédito e consistência de gastos.
-2. **Previsão de Saldo (Cashflow Forecast)**: Projeta seu saldo para os próximos 30, 60 e 90 dias com base nas receitas e despesas recorrentes.
+2. **Previsão de Saldo (Cashflow Forecast)**: Projeta seu saldo para os próximos 30, 60 e 90 dias com base nas receitas e despesas recorrentes aprendidas dos extratos importados.
 3. **Detecção de Anomalias**: Alerta sobre despesas com valor muito acima da média habitual em cada categoria.
 4. **Insights Contextuais**: Recomendações personalizadas sobre onde economizar e quando antecipar pagamentos.
 
@@ -118,6 +122,28 @@ O Pigo combina o melhor dos dois mundos: **independência local** e **sincroniza
   - **"Já tenho uma conta na Nuvem"**: Você informa seu e-mail e senha do Supabase e o Pigo restaura automaticamente todas as suas contas, faturas, transações, categorias e regras na nova máquina.
   - **"Começar do Zero"**: Inicia uma base limpa para você configurar como desejar.
 - **Trabalho sem conexão**: Se a internet cair, você continua usando normalmente. Quando a conexão voltar, o motor sincroniza as alterações pendentes.
+- **Sincronização automática**: ao abrir, a cada 3 minutos, ao voltar o foco para a janela e ao fechar o app. Criações, edições e exclusões são rastreadas por triggers no SQLite.
+- **Sessão renovada sozinha**: o token do Supabase é renovado automaticamente; se a sessão expirar de vez, o selo da nuvem mostra **"Entrar novamente"** e nada do que você fez offline é perdido.
+- **Ressincronizar Tudo**: botão na janela da nuvem que confere todos os registros com o Supabase (útil ao configurar uma máquina nova).
+- **Configurações e extratos originais também sincronizam** (nome, tema, configuração da reserva e os arquivos OFX/CSV no Supabase Storage).
+- **Tokens protegidos**: o login fica cifrado com a proteção do Windows (DPAPI) e nunca é exposto à interface.
+
+### Configuração única no Supabase
+Rode uma vez o arquivo [`supabase/migrations/20261005_sync_melhorias.sql`](supabase/migrations/20261005_sync_melhorias.sql) no **SQL Editor** do painel do Supabase. Ele cria:
+- trigger que grava o **horário do servidor** em toda alteração (imune a relógios diferentes entre PCs);
+- tabela `user_settings` para sincronizar as configurações;
+- bucket privado `statements` para os arquivos originais dos extratos.
+
+Sem ele o app continua funcionando; a janela da nuvem avisa o que está desativado.
+
+### Projeto pausado (plano gratuito)
+O Supabase pausa projetos gratuitos após 7 dias sem uso. O workflow [`supabase-keepalive.yml`](.github/workflows/supabase-keepalive.yml) faz uma consulta leve a cada 3 dias para evitar isso, e o app mostra uma mensagem clara caso o projeto esteja pausado.
+
+---
+
+## 💾 Backups e Atualizações
+- **Backup diário automático** do banco local (mantém os últimos 7) + cópia de segurança antes de qualquer restauração ou ressincronização. Opcionalmente copia para uma pasta extra (OneDrive, pendrive). Restauração com 1 clique em *Configurações*.
+- **Atualização automática**: a versão instalada pelo *Pigo Setup* baixa novas versões do GitHub Releases e avisa para reiniciar. Para publicar uma versão nova: aumente `version` no `package.json` e rode `npm run release` com a variável `GH_TOKEN` definida.
 - **Proteção de Integridade**: A sincronização gerencia chaves estrangeiras (`PRAGMA foreign_keys`) de forma segura, garantindo que nenhum dado seja corrompido durante restaurações em massa.
 
 ---
@@ -163,7 +189,7 @@ Pigo (Financeiro)
 │   ├── context/                # FinancialContext com gerenciamento reativo e tema
 │   ├── types/                  # Tipagem estrita em TypeScript
 │   ├── utils/                  # Formatadores BRL, datas e cálculos
-│   └── views/                  # Telas do app (Dashboard, Lançamentos, Recorrentes, etc.)
+│   └── views/                  # Telas do app (Dashboard, Lançamentos, Inteligência, etc.)
 └── release/                    # Instaladores compilados para Windows
 ```
 

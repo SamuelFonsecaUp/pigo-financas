@@ -45,15 +45,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   duplicateTransaction: (id) => ipcRenderer.invoke('transactions:duplicate', id),
   batchMoveTransactions: (data) => ipcRenderer.invoke('transactions:batchMove', data),
 
-  // Recurring Rules
-  getRecurringRules: () => ipcRenderer.invoke('recurring:get'),
-  createRecurringRule: (data) => ipcRenderer.invoke('recurring:create', data),
-  updateRecurringRule: (id, data) => ipcRenderer.invoke('recurring:update', id, data),
-  toggleRecurringRule: (id) => ipcRenderer.invoke('recurring:toggle', id),
-  deleteRecurringRule: (id) => ipcRenderer.invoke('recurring:delete', id),
-  executeRecurringNow: (id) => ipcRenderer.invoke('recurring:executeNow', id),
-  processRecurringRules: () => ipcRenderer.invoke('recurring:process'),
-
   // Category Budgets
   getCategoryBudgets: (monthKey) => ipcRenderer.invoke('budgets:get', monthKey),
   setCategoryBudget: (data) => ipcRenderer.invoke('budgets:set', data),
@@ -108,7 +99,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getCreditCardIntelligence: () => ipcRenderer.invoke('intelligence:getCardAnalysis'),
   getGoalsIntelligence: () => ipcRenderer.invoke('intelligence:getGoals'),
   getMonthlyCloseout: (yearMonth) => ipcRenderer.invoke('intelligence:getMonthlyCloseout', yearMonth),
-  convertCandidateToRecurring: (candidate) => ipcRenderer.invoke('intelligence:convertRecurring', candidate),
+
+  // Reserva Financeira
+  getReserveOverview: (monthKey) => ipcRenderer.invoke('reserve:get', monthKey),
+  setReserveTransactionExcluded: (transactionId, excluded) => ipcRenderer.invoke('reserve:setExcluded', transactionId, excluded),
+  registerReserveMovement: (data) => ipcRenderer.invoke('reserve:registerMovement', data),
 
   // Cloud Auth & Sync (Supabase / Local-First)
   getCloudSession: () => ipcRenderer.invoke('cloud:getSession'),
@@ -116,8 +111,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cloudSignUp: (email, password, config) => ipcRenderer.invoke('cloud:signUp', email, password, config),
   cloudSignOut: () => ipcRenderer.invoke('cloud:signOut'),
   updateCloudConfig: (supabaseUrl, supabaseAnonKey) => ipcRenderer.invoke('cloud:updateConfig', supabaseUrl, supabaseAnonKey),
-  triggerCloudSync: () => ipcRenderer.invoke('cloud:sync'),
+  triggerCloudSync: (options) => ipcRenderer.invoke('cloud:sync', options),
+  getCloudPendingCount: () => ipcRenderer.invoke('cloud:pendingCount'),
   cloudFullPull: () => ipcRenderer.invoke('cloud:fullPull'),
+
+  // App version & auto-update
+  getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
+  checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
+  installUpdate: () => ipcRenderer.invoke('app:installUpdate'),
+  onUpdateStatus: (callback) => {
+    const handler = (_event, status) => callback(status);
+    ipcRenderer.on('app:updateStatus', handler);
+    return () => ipcRenderer.removeListener('app:updateStatus', handler);
+  },
+
+  // Local automatic backups
+  listLocalBackups: () => ipcRenderer.invoke('backup:listLocal'),
+  createBackupNow: () => ipcRenderer.invoke('backup:createNow'),
+  openBackupsFolder: () => ipcRenderer.invoke('backup:openFolder'),
+  chooseBackupFolder: () => ipcRenderer.invoke('backup:chooseFolder'),
+  restoreLocalBackup: (fileName) => ipcRenderer.invoke('backup:restoreLocal', fileName),
 
   // Backup, Restore & CSV Dialogs
   exportBackupDialog: () => ipcRenderer.invoke('backup:export'),

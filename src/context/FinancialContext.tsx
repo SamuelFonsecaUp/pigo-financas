@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import {
   Account,
   Category,
@@ -7,20 +7,23 @@ import {
   Settings,
   DashboardData,
   Transaction,
-  RecurringRule,
   CategoryBudget,
   NotificationItem,
   PendingImportSession,
   CloudSession,
   SyncResult,
+  SyncStatus,
 } from '../types';
+
+// Intervalo da sincronização automática em segundo plano
+const AUTO_SYNC_INTERVAL_MS = 3 * 60 * 1000;
 
 export type AppView =
   | 'dashboard'
   | 'transactions'
   | 'accounts'
+  | 'reserve'
   | 'cards'
-  | 'recurring'
   | 'budgets'
   | 'calendar'
   | 'categories'
@@ -47,7 +50,6 @@ interface FinancialContextType {
   categories: Category[];
   creditCards: CreditCard[];
   goals: Goal[];
-  recurringRules: RecurringRule[];
   budgets: CategoryBudget[];
   notifications: NotificationItem[];
   unreadNotificationsCount: number;
@@ -88,12 +90,15 @@ interface FinancialContextType {
 
   // Cloud Auth & Sync (Supabase / Local-First)
   cloudSession: CloudSession | null;
-  syncStatus: 'synced' | 'offline' | 'local_only' | 'syncing' | 'error';
+  syncStatus: SyncStatus;
+  syncMessage: string | null;
+  pendingSyncCount: number;
+  cloudFeaturesMissing: string[];
   isSyncing: boolean;
   cloudAuthModalOpen: boolean;
   setCloudAuthModalOpen: (open: boolean) => void;
   refreshCloudSession: () => Promise<void>;
-  triggerSync: () => Promise<SyncResult | null>;
+  triggerSync: (options?: { fullResync?: boolean; silent?: boolean }) => Promise<SyncResult | null>;
 }
 
 const FinancialContext = createContext<FinancialContextType | undefined>(undefined);
@@ -106,7 +111,6 @@ export const FinancialProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [categories, setCategories] = useState<Category[]>([]);
   const [creditCards, setCreditCards] = useState<CreditCard[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
-  const [recurringRules, setRecurringRules] = useState<RecurringRule[]>([]);
   const [budgets, setBudgets] = useState<CategoryBudget[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadNotificationsCount, setUnreadNotificationsCount] = useState<number>(0);
@@ -191,38 +195,60 @@ export const FinancialProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // Cloud Auth & Sync (Supabase / Local-First)
   const [cloudSession, setCloudSession] = useState<CloudSession | null>(null);
-  const [syncStatus, setSyncStatus] = useState<'synced' | 'offline' | 'local_only' | 'syncing' | 'error'>('local_only');
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>('local_only');
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
+  const [cloudFeaturesMissing, setCloudFeaturesMissing] = useState<string[]>([]);
   const [isSyncing, setIsSyncing] = useState(false);
   const [cloudAuthModalOpen, setCloudAuthModalOpen] = useState(false);
+  // refreshAll is declared later; the ref lets triggerSync reload the UI after a pull
+  const refreshAllRef = useRef<() => Promise<void>>(async () => {});
+  const syncInFlightRef = useRef(false);
 
   const refreshCloudSession = useCallback(async () => {
     if (!window.electronAPI?.getCloudSession) return;
     try {
       const s = await window.electronAPI.getCloudSession();
       setCloudSession(s);
-      if (s?.userId) {
-        setSyncStatus('synced');
-      } else {
+      if (!s?.userId) {
         setSyncStatus('local_only');
+      }
+      if (window.electronAPI.getCloudPendingCount) {
+        setPendingSyncCount(await window.electronAPI.getCloudPendingCount());
       }
     } catch (e) {
       console.error(e);
     }
   }, []);
 
-  const triggerSync = useCallback(async (): Promise<SyncResult | null> => {
-    if (!window.electronAPI?.triggerCloudSync) return null;
-    setIsSyncing(true);
-    setSyncStatus('syncing');
+  const triggerSync = useCallback(async (
+    options: { fullResync?: boolean; silent?: boolean } = {}
+  ): Promise<SyncResult | null> => {
+    if (!window.electronAPI?.triggerCloudSync || syncInFlightRef.current) return null;
+    syncInFlightRef.current = true;
+    if (!options.silent) {
+      setIsSyncing(true);
+      setSyncStatus('syncing');
+    }
     try {
-      const res = await window.electronAPI.triggerCloudSync();
-      setSyncStatus(res.status);
+      const res = await window.electronAPI.triggerCloudSync({ fullResync: options.fullResync });
+      if (res.status !== 'syncing') {
+        setSyncStatus(res.status);
+        setSyncMessage(res.message || null);
+      }
+      if (typeof res.pendingCount === 'number') setPendingSyncCount(res.pendingCount);
+      if (Array.isArray(res.featuresMissing)) setCloudFeaturesMissing(res.featuresMissing);
+      if ((res.pulledCount || 0) > 0 || (res.deletedCount || 0) > 0 || options.fullResync) {
+        await refreshAllRef.current();
+      }
       await refreshCloudSession();
       return res;
-    } catch (e) {
+    } catch (e: any) {
       setSyncStatus('error');
+      setSyncMessage(e?.message || 'Falha ao sincronizar.');
       return null;
     } finally {
+      syncInFlightRef.current = false;
       setIsSyncing(false);
     }
   }, [refreshCloudSession]);
@@ -254,13 +280,12 @@ export const FinancialProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     try {
       if (!window.electronAPI) return;
 
-      const [s, accs, cats, cards, gls, recs, bdgs, notifs, dash] = await Promise.all([
+      const [s, accs, cats, cards, gls, bdgs, notifs, dash] = await Promise.all([
         window.electronAPI.getSettings(),
         window.electronAPI.getAccounts(true),
         window.electronAPI.getCategories(),
         window.electronAPI.getCreditCards(true),
         window.electronAPI.getGoals(),
-        window.electronAPI.getRecurringRules(),
         window.electronAPI.getCategoryBudgets(),
         window.electronAPI.getNotifications(),
         window.electronAPI.getDashboardData(),
@@ -271,11 +296,14 @@ export const FinancialProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setCategories(cats);
       setCreditCards(cards);
       setGoals(gls);
-      setRecurringRules(recs);
       setBudgets(bdgs);
       setNotifications(notifs.notifications);
       setUnreadNotificationsCount(notifs.unreadCount);
       setDashboardData(dash);
+
+      if (window.electronAPI.getCloudPendingCount) {
+        window.electronAPI.getCloudPendingCount().then(setPendingSyncCount).catch(() => {});
+      }
 
       // Apply theme
       const currentTheme = s?.theme === 'light' ? 'light' : 'dark';
@@ -302,8 +330,8 @@ export const FinancialProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         }
         await refreshAll();
         await refreshCloudSession();
-        // Silent background sync check if user is connected
-        window.electronAPI.triggerCloudSync?.().catch(() => {});
+        // Background sync on startup: pulls what other computers changed
+        triggerSync({ silent: true });
       } catch (e: any) {
         console.error('Init error:', e);
       } finally {
@@ -311,7 +339,25 @@ export const FinancialProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     }
     init();
-  }, [refreshAll, refreshCloudSession]);
+  }, [refreshAll, refreshCloudSession, triggerSync]);
+
+  useEffect(() => {
+    refreshAllRef.current = refreshAll;
+  }, [refreshAll]);
+
+  // Keep computers in sync: periodic cycle, on window focus and when the network returns
+  useEffect(() => {
+    if (!cloudSession?.userId) return;
+    const runSilent = () => { triggerSync({ silent: true }); };
+    const interval = setInterval(runSilent, AUTO_SYNC_INTERVAL_MS);
+    window.addEventListener('focus', runSilent);
+    window.addEventListener('online', runSilent);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', runSilent);
+      window.removeEventListener('online', runSilent);
+    };
+  }, [cloudSession?.userId, triggerSync]);
 
   // Global Keyboard Shortcuts (Desktop Productivity)
   useEffect(() => {
@@ -388,7 +434,6 @@ export const FinancialProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         categories,
         creditCards,
         goals,
-        recurringRules,
         budgets,
         notifications,
         unreadNotificationsCount,
@@ -420,6 +465,9 @@ export const FinancialProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         toggleTheme,
         cloudSession,
         syncStatus,
+        syncMessage,
+        pendingSyncCount,
+        cloudFeaturesMissing,
         isSyncing,
         cloudAuthModalOpen,
         setCloudAuthModalOpen,

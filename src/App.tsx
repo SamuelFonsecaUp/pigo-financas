@@ -8,12 +8,12 @@ import { NotificationDrawer } from './components/NotificationDrawer';
 import { TransactionModal } from './views/TransactionModal';
 import { ImportBankModal } from './views/ImportBankModal';
 import { CloudAuthModal } from './views/CloudAuthModal';
+import { UpdateBanner } from './components/AppUpdate';
 
 import { DashboardView } from './views/DashboardView';
 import { TransactionsView } from './views/TransactionsView';
 import { AccountsView } from './views/AccountsView';
 import { CardsView } from './views/CardsView';
-import { RecurringView } from './views/RecurringView';
 import { BudgetsView } from './views/BudgetsView';
 import { CalendarView } from './views/CalendarView';
 import { CategoriesView } from './views/CategoriesView';
@@ -22,6 +22,7 @@ import { ReportsView } from './views/ReportsView';
 import { SettingsView } from './views/SettingsView';
 import { OnboardingView } from './views/OnboardingView';
 import { ImportView } from './views/ImportView';
+import { ReserveView } from './views/ReserveView';
 import { IntelligenceView } from './views/IntelligenceView';
 
 export const App: React.FC = () => {
@@ -89,6 +90,7 @@ export const App: React.FC = () => {
       {/* Main Content Area */}
       <div className="flex flex-col flex-1 min-w-0 h-full overflow-hidden bg-slate-950/40">
         <Navbar />
+        <UpdateBanner />
 
         <main className="flex-1 min-h-0 overflow-hidden relative">
           <div key={currentView} className="h-full w-full animate-fade-in">
@@ -96,7 +98,6 @@ export const App: React.FC = () => {
             {currentView === 'transactions' && <TransactionsView />}
             {currentView === 'accounts' && <AccountsView />}
             {currentView === 'cards' && <CardsView />}
-            {currentView === 'recurring' && <RecurringView />}
             {currentView === 'budgets' && <BudgetsView />}
             {currentView === 'calendar' && <CalendarView />}
             {currentView === 'categories' && <CategoriesView />}
@@ -104,6 +105,7 @@ export const App: React.FC = () => {
             {currentView === 'reports' && <ReportsView />}
             {currentView === 'settings' && <SettingsView />}
             {currentView === 'import' && <ImportView />}
+            {currentView === 'reserve' && <ReserveView />}
             {currentView === 'intelligence' && <IntelligenceView />}
           </div>
         </main>

@@ -1,11 +1,17 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { initDatabase } = require('./database.cjs');
+const { initDatabase, closeDatabase } = require('./database.cjs');
 const { getFinancialService } = require('./services.cjs');
+const { setTokenCipher } = require('./cloudAuth.cjs');
+
+const BACKUP_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 let mainWindow = null;
 let service = null;
+const QUIT_SYNC_TIMEOUT_MS = 8000;
+let quitSyncDone = false;
 
 // Error logging helper
 function logError(error, context = '') {
@@ -78,13 +84,44 @@ function createWindow() {
   }
 }
 
+// Envia o estado da atualização automática para a interface
+function sendUpdateStatus(status) {
+  mainWindow?.webContents.send('app:updateStatus', status);
+}
+
+let autoUpdater = null;
+function setupAutoUpdater() {
+  // Só a versão instalada (NSIS) pode se atualizar; dev e win-unpacked não
+  if (!app.isPackaged) return;
+  try {
+    ({ autoUpdater } = require('electron-updater'));
+  } catch (e) {
+    logError(e, 'autoUpdater load');
+    return;
+  }
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on('update-available', (info) => sendUpdateStatus({ state: 'downloading', version: info.version }));
+  autoUpdater.on('update-downloaded', (info) => sendUpdateStatus({ state: 'ready', version: info.version }));
+  autoUpdater.on('error', (err) => logError(err, 'autoUpdater'));
+  const check = () => autoUpdater.checkForUpdates().catch(err => logError(err, 'autoUpdater check'));
+  check();
+  setInterval(check, UPDATE_CHECK_INTERVAL_MS);
+}
+
 app.whenReady().then(() => {
+  // Tokens da nuvem cifrados com a proteção do Windows (DPAPI)
+  if (safeStorage.isEncryptionAvailable()) {
+    setTokenCipher({
+      encrypt: (text) => safeStorage.encryptString(text).toString('base64'),
+      decrypt: (b64) => safeStorage.decryptString(Buffer.from(b64, 'base64')),
+    });
+  }
+
   // Initialize Database in user data dir with self-healing recovery
   try {
     initDatabase();
     service = getFinancialService();
-    // Process any due recurring transactions upon launch
-    service.processRecurringRules();
   } catch (err) {
     logError(err, 'Database Initialization - Attempt 1');
     try {
@@ -100,7 +137,6 @@ app.whenReady().then(() => {
       }
       initDatabase();
       service = getFinancialService();
-      service.processRecurringRules();
     } catch (retryErr) {
       logError(retryErr, 'Database Initialization - Retry Failed');
       dialog.showErrorBox(
@@ -112,7 +148,70 @@ app.whenReady().then(() => {
     }
   }
 
+  try {
+    service.cloudAuth.encryptStoredTokens();
+  } catch (e) {
+    logError(e, 'encryptStoredTokens');
+  }
+
+  // Backup diário automático (e verificação periódica para quem deixa o app aberto)
+  const runDailyBackup = () => service.runDailyBackupIfDue().catch(err => logError(err, 'daily backup'));
+  runDailyBackup();
+  setInterval(runDailyBackup, BACKUP_CHECK_INTERVAL_MS);
+
   // Register IPC Handlers
+
+  // App version & auto-update
+  handleIpc('app:getVersion', () => ({ version: app.getVersion(), canAutoUpdate: app.isPackaged }));
+  handleIpc('app:checkForUpdates', async () => {
+    if (!autoUpdater) return { state: 'unavailable' };
+    const res = await autoUpdater.checkForUpdates();
+    return { state: res?.updateInfo?.version && res.updateInfo.version !== app.getVersion() ? 'downloading' : 'up_to_date', version: res?.updateInfo?.version };
+  });
+  handleIpc('app:installUpdate', async () => {
+    if (!autoUpdater) return false;
+    // Envia alterações pendentes antes de reiniciar
+    quitSyncDone = true;
+    await Promise.race([
+      service.triggerCloudSync().catch(err => logError(err, 'pre-update sync')),
+      new Promise(resolve => setTimeout(resolve, QUIT_SYNC_TIMEOUT_MS)),
+    ]);
+    autoUpdater.quitAndInstall();
+    return true;
+  });
+
+  // Local automatic backups
+  handleIpc('backup:listLocal', () => ({ folder: service.getLocalBackupsFolder(), backups: service.listLocalBackups() }));
+  handleIpc('backup:createNow', () => service.createLocalBackup('manual'));
+  handleIpc('backup:openFolder', async () => {
+    const folder = service.getLocalBackupsFolder();
+    await shell.openPath(folder);
+    return folder;
+  });
+  handleIpc('backup:chooseFolder', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title: 'Escolher pasta extra para os backups automáticos',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    return canceled || filePaths.length === 0 ? null : filePaths[0];
+  });
+  handleIpc('backup:restoreLocal', async (fileName) => {
+    const folder = service.getLocalBackupsFolder();
+    const source = path.join(folder, path.basename(String(fileName)));
+    if (!fs.existsSync(source)) throw new Error('Backup não encontrado.');
+    await service.createLocalBackup('pre-restore');
+
+    const dbPath = path.join(app.getPath('userData'), 'meu_financeiro.sqlite');
+    closeDatabase();
+    for (const suffix of ['-wal', '-shm']) {
+      try { fs.unlinkSync(`${dbPath}${suffix}`); } catch (e) {}
+    }
+    fs.copyFileSync(source, dbPath);
+    quitSyncDone = true;
+    app.relaunch();
+    app.exit(0);
+    return true;
+  });
 
   // Window Controls
   handleIpc('window:minimize', () => mainWindow?.minimize());
@@ -163,15 +262,6 @@ app.whenReady().then(() => {
   handleIpc('transactions:delete', (id, deleteGroup) => service.deleteTransaction(id, deleteGroup));
   handleIpc('transactions:duplicate', (id) => service.duplicateTransaction(id));
   handleIpc('transactions:batchMove', (data) => service.batchMoveTransactions(data));
-
-  // Recurring Rules
-  handleIpc('recurring:get', () => service.getRecurringRules());
-  handleIpc('recurring:create', (data) => service.createRecurringRule(data));
-  handleIpc('recurring:update', (id, data) => service.updateRecurringRule(id, data));
-  handleIpc('recurring:toggle', (id) => service.toggleRecurringRule(id));
-  handleIpc('recurring:delete', (id) => service.deleteRecurringRule(id));
-  handleIpc('recurring:executeNow', (id) => service.executeRecurringNow(id));
-  handleIpc('recurring:process', () => service.processRecurringRules());
 
   // Category Budgets
   handleIpc('budgets:get', (monthKey) => service.getCategoryBudgets(monthKey));
@@ -282,7 +372,11 @@ app.whenReady().then(() => {
   handleIpc('intelligence:getCardAnalysis', () => service.getCreditCardIntelligence());
   handleIpc('intelligence:getGoals', () => service.getGoalsIntelligence());
   handleIpc('intelligence:getMonthlyCloseout', (yearMonth) => service.getMonthlyCloseout(yearMonth));
-  handleIpc('intelligence:convertRecurring', (candidate) => service.convertCandidateToRecurring(candidate));
+
+  // Reserva Financeira
+  handleIpc('reserve:get', (monthKey) => service.getReserveOverview(monthKey));
+  handleIpc('reserve:setExcluded', (transactionId, excluded) => service.setReserveTransactionExcluded(transactionId, excluded));
+  handleIpc('reserve:registerMovement', (data) => service.registerReserveMovement(data));
 
   // Cloud Auth & Sync (Supabase / Local-First)
   handleIpc('cloud:getSession', () => service.getCloudSession());
@@ -290,8 +384,15 @@ app.whenReady().then(() => {
   handleIpc('cloud:signUp', (email, password, config) => service.cloudSignUp(email, password, config));
   handleIpc('cloud:signOut', () => service.cloudSignOut());
   handleIpc('cloud:updateConfig', (supabaseUrl, supabaseAnonKey) => service.updateCloudConfig(supabaseUrl, supabaseAnonKey));
-  handleIpc('cloud:sync', () => service.triggerCloudSync());
-  handleIpc('cloud:fullPull', () => service.cloudFullPull());
+  handleIpc('cloud:sync', async (options) => {
+    if (options?.fullResync) await service.createLocalBackup('pre-resync').catch(err => logError(err, 'pre-resync backup'));
+    return service.triggerCloudSync(options);
+  });
+  handleIpc('cloud:pendingCount', () => service.getCloudPendingCount());
+  handleIpc('cloud:fullPull', async () => {
+    await service.createLocalBackup('pre-restore').catch(err => logError(err, 'pre-pull backup'));
+    return service.cloudFullPull();
+  });
 
   // Backup & Restore Dialogs
   handleIpc('backup:export', async () => {
@@ -319,6 +420,7 @@ app.whenReady().then(() => {
     if (canceled || filePaths.length === 0) return { success: false, canceled: true };
 
     const content = fs.readFileSync(filePaths[0], 'utf8');
+    await service.createLocalBackup('pre-restore');
     service.restoreBackup(content);
     return { success: true };
   });
@@ -343,10 +445,30 @@ app.whenReady().then(() => {
   handleIpc('demo:clear', () => service.clearDemoData());
 
   createWindow();
+  setupAutoUpdater();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+// Push pending local changes before quitting so the next computer sees them
+app.on('before-quit', (event) => {
+  if (quitSyncDone || !service) return;
+  quitSyncDone = true;
+  try {
+    const session = service.getCloudSession();
+    if (!session?.userId || service.getCloudPendingCount() === 0) return;
+  } catch (e) {
+    return;
+  }
+
+  event.preventDefault();
+  const timeout = new Promise(resolve => setTimeout(resolve, QUIT_SYNC_TIMEOUT_MS));
+  Promise.race([
+    service.triggerCloudSync().catch(err => logError(err, 'before-quit sync')),
+    timeout,
+  ]).finally(() => app.quit());
 });
 
 app.on('window-all-closed', () => {

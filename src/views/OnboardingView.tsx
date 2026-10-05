@@ -64,20 +64,27 @@ export const OnboardingView: React.FC = () => {
         await refreshCloudSession();
 
         // Pull remote data
+        let restoredCount: number | null = null;
         try {
-          await window.electronAPI.cloudFullPull();
-        } catch (pullErr) {
+          const pull = await window.electronAPI.cloudFullPull();
+          restoredCount = pull.totalRestored;
+        } catch (pullErr: any) {
           console.warn('Initial fullPull error:', pullErr);
+          showToast(`Não foi possível baixar os dados da nuvem agora: ${pullErr?.message || pullErr}. O app tentará de novo automaticamente.`, 'error');
         }
 
-        // Complete onboarding
+        // Complete onboarding (keeps name/currency restored from the cloud)
+        const restoredSettings = await window.electronAPI.getSettings();
         await window.electronAPI.updateSettings({
-          userName: res.user.email.split('@')[0] || 'Usuário',
-          currency: 'BRL',
+          ...(restoredSettings?.userName && restoredSettings.userName !== 'Usuário'
+            ? {}
+            : { userName: res.user.email.split('@')[0] || 'Usuário' }),
           onboardingCompleted: true,
         });
 
-        showToast('Dados restaurados com sucesso! Bem-vindo de volta.', 'success');
+        if (restoredCount !== null) {
+          showToast(`Dados restaurados com sucesso (${restoredCount} registros). Bem-vindo de volta!`, 'success');
+        }
         await refreshAll();
       } else {
         // Sign up

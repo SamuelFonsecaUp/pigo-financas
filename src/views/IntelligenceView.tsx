@@ -39,10 +39,9 @@ import {
   BalanceForecast,
   SmartInsight,
   AnomalyItem,
-  RecurringCandidate,
   CardIntelligenceData,
-  MonthlyCloseoutReport,
 } from '../types';
+import { MonthlyCloseoutPanel } from './MonthlyCloseoutPanel';
 
 type ActiveTab =
   | 'health'
@@ -54,13 +53,12 @@ type ActiveTab =
   | 'closeout';
 
 export const IntelligenceView: React.FC = () => {
-  const { showToast, refreshAll, openEditTransaction } = useFinancial();
+  const { showToast, openEditTransaction } = useFinancial();
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('health');
   const [data, setData] = useState<IntelligenceOverviewData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [forecastDays, setForecastDays] = useState<30 | 60 | 90>(60);
-  const [convertingId, setConvertingId] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -95,22 +93,6 @@ export const IntelligenceView: React.FC = () => {
       setData(prev => prev ? { ...prev, forecast } : null);
     } catch (e) {
       console.error(e);
-    }
-  };
-
-  const handleConvertRecurring = async (candidate: RecurringCandidate) => {
-    if (!window.electronAPI) return;
-    setConvertingId(candidate.id);
-    try {
-      await window.electronAPI.convertCandidateToRecurring(candidate);
-      showToast(`Regra recorrente criada para "${candidate.cleanDescription}"!`, 'success');
-      await refreshAll();
-      await loadData();
-    } catch (e) {
-      console.error(e);
-      showToast('Erro ao converter candidato para regra recorrente.', 'error');
-    } finally {
-      setConvertingId(null);
     }
   };
 
@@ -446,7 +428,7 @@ export const IntelligenceView: React.FC = () => {
                   Projeção de Fluxo de Caixa Futuro
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Simulação dia a dia considerando despesas recorrentes, faturas de cartões e receitas previstas.
+                  Simulação dia a dia com receitas e despesas recorrentes aprendidas dos seus extratos, lançamentos agendados e faturas de cartões.
                 </p>
               </div>
 
@@ -768,15 +750,15 @@ export const IntelligenceView: React.FC = () => {
                 Assinaturas e Recorrências Detectadas Automaticamente
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                Identificadas pelo algoritmo através da cadência de dias (~30 dias) e valores estáveis. Transforme em regra com 1 clique.
+                Aprendidas automaticamente dos extratos importados (cadência de ~30 dias e valores estáveis). Quanto mais extratos você sobe, mais precisa fica a detecção — e elas já entram na previsão de saldo e no score de custos fixos.
               </p>
             </div>
 
             {recurringCandidates.length === 0 ? (
               <div className="p-8 rounded-2xl bg-slate-900/40 border border-slate-850 text-center text-slate-400">
                 <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
-                <p className="text-sm font-medium text-slate-200">Nenhuma assinatura não cadastrada encontrada!</p>
-                <p className="text-xs text-slate-400 mt-1">Todas as despesas periódicas identificadas já possuem regras cadastradas.</p>
+                <p className="text-sm font-medium text-slate-200">Nenhuma despesa periódica identificada ainda.</p>
+                <p className="text-xs text-slate-400 mt-1">Importe extratos de pelo menos 2 ou 3 meses para o Pigo reconhecer assinaturas e contas fixas.</p>
               </div>
             ) : (
               <div className="space-y-3">
@@ -798,9 +780,14 @@ export const IntelligenceView: React.FC = () => {
                           <span className="text-[10px] text-emerald-400 font-medium">
                             {cand.confidence}% confiança
                           </span>
+                          {!cand.isActive && (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-400">
+                              Sem cobrança recente
+                            </span>
+                          )}
                         </div>
                         <p className="text-xs text-slate-400 mt-1">
-                          Detectado {cand.occurrencesCount} vezes no histórico • Dia de cobrança sugerido: dia {cand.suggestedBillingDay}
+                          Detectado {cand.occurrencesCount} vezes no histórico • Cobrança por volta do dia {cand.suggestedBillingDay} • Última em {formatDate(cand.lastDate)}
                         </p>
                       </div>
                     </div>
@@ -809,18 +796,6 @@ export const IntelligenceView: React.FC = () => {
                       <span className="text-base font-bold text-white">
                         {formatCurrency(cand.averageAmount)}
                       </span>
-                      <button
-                        disabled={convertingId === cand.id}
-                        onClick={() => handleConvertRecurring(cand)}
-                        className="px-3 py-1.5 text-xs font-semibold text-white bg-brand-600 hover:bg-brand-500 disabled:opacity-50 rounded-lg transition-all shadow-sm flex items-center gap-1.5"
-                      >
-                        {convertingId === cand.id ? (
-                          <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                        ) : (
-                          <Zap className="w-3 h-3" />
-                        )}
-                        Ativar Regra Recorrente
-                      </button>
                     </div>
                   </div>
                 ))}
@@ -946,122 +921,7 @@ export const IntelligenceView: React.FC = () => {
         )}
 
         {/* ================= TAB 7: FECHAMENTO MENSAL ================= */}
-        {activeTab === 'closeout' && (
-          <div className="space-y-6 max-w-4xl">
-            <div>
-              <h2 className="text-base font-bold text-white flex items-center gap-2">
-                <Receipt className="w-4 h-4 text-emerald-400" />
-                Resumo Executivo de Fechamento Mensal
-              </h2>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Consolidado do mês ({monthlyCloseout.monthKey}) com comparativos de desempenho e maiores despesas.
-              </p>
-            </div>
-
-            {/* Main KPI Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-              <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-850">
-                <span className="text-xs text-slate-400 block font-medium">Receitas Totais</span>
-                <span className="text-lg font-bold text-emerald-400 mt-1 block">
-                  {formatCurrency(monthlyCloseout.incomeTotal)}
-                </span>
-                <span className="text-[10px] text-slate-500 mt-1 block">
-                  {monthlyCloseout.incomeCount} lançamentos
-                </span>
-              </div>
-
-              <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-850">
-                <span className="text-xs text-slate-400 block font-medium">Despesas Totais</span>
-                <span className="text-lg font-bold text-rose-400 mt-1 block">
-                  {formatCurrency(monthlyCloseout.expenseTotal)}
-                </span>
-                <span className="text-[10px] text-slate-500 mt-1 block">
-                  {monthlyCloseout.expenseCount} lançamentos
-                </span>
-              </div>
-
-              <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-850">
-                <span className="text-xs text-slate-400 block font-medium">Saldo Poupado</span>
-                <span className={`text-lg font-bold mt-1 block ${monthlyCloseout.savedAmount >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  {formatCurrency(monthlyCloseout.savedAmount)}
-                </span>
-                <span className="text-[10px] text-slate-500 mt-1 block">
-                  {monthlyCloseout.savedAmount >= 0 ? 'Superávit' : 'Déficit'}
-                </span>
-              </div>
-
-              <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-850">
-                <span className="text-xs text-slate-400 block font-medium">Taxa de Poupança</span>
-                <span className="text-lg font-bold text-brand-400 mt-1 block">
-                  {monthlyCloseout.savingsRate}%
-                </span>
-                <span className="text-[10px] text-slate-500 mt-1 block">
-                  Meta saudável: ≥ 20%
-                </span>
-              </div>
-            </div>
-
-            {/* Achievements */}
-            {monthlyCloseout.achievements.length > 0 && (
-              <div className="p-4 rounded-xl bg-emerald-950/20 border border-emerald-800/40 text-emerald-300">
-                <div className="flex items-center gap-2 mb-2">
-                  <Sparkles className="w-4 h-4 text-emerald-400" />
-                  <span className="text-xs font-bold uppercase tracking-wider">Conquistas do Mês</span>
-                </div>
-                <ul className="space-y-1 text-xs">
-                  {monthlyCloseout.achievements.map((ach, idx) => (
-                    <li key={idx} className="flex items-center gap-2">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                      <span>{ach}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {/* Top Categories of the Month */}
-            <div className="p-5 rounded-2xl bg-slate-900/60 border border-slate-850">
-              <h3 className="text-sm font-semibold text-slate-200 mb-3">
-                Top 5 Categorias com Maior Gasto no Mês
-              </h3>
-              <div className="space-y-3">
-                {monthlyCloseout.topCategories.map((cat) => (
-                  <div key={cat.id} className="space-y-1">
-                    <div className="flex justify-between text-xs">
-                      <span className="font-semibold text-white flex items-center gap-2">
-                        <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: cat.color }} />
-                        {cat.name}
-                      </span>
-                      <span className="text-slate-300 font-bold">
-                        {formatCurrency(cat.total)} ({cat.percentage}%)
-                      </span>
-                    </div>
-                    <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
-                      <div
-                        className="h-full rounded-full"
-                        style={{ width: `${cat.percentage}%`, backgroundColor: cat.color }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Highest Single Expense */}
-            {monthlyCloseout.highestExpense && (
-              <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-850 flex justify-between items-center text-xs">
-                <div>
-                  <span className="text-[10px] text-slate-400 uppercase font-bold block">Maior Despesa Individual do Mês</span>
-                  <span className="text-sm font-bold text-white mt-0.5 block">{monthlyCloseout.highestExpense.description}</span>
-                  <span className="text-slate-400">{monthlyCloseout.highestExpense.categoryName} • {formatDate(monthlyCloseout.highestExpense.date)}</span>
-                </div>
-                <span className="text-base font-bold text-rose-400">
-                  {formatCurrency(monthlyCloseout.highestExpense.amount)}
-                </span>
-              </div>
-            )}
-          </div>
-        )}
+        {activeTab === 'closeout' && <MonthlyCloseoutPanel initialData={monthlyCloseout} />}
       </div>
     </div>
   );

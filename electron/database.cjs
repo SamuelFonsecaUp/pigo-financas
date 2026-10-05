@@ -4,6 +4,22 @@ const fs = require('fs');
 
 let dbInstance = null;
 
+// Tabelas replicadas com a nuvem (ordem respeita dependências de chave estrangeira)
+const SYNC_TABLES = [
+  'categories',
+  'accounts',
+  'credit_cards',
+  'imported_statements',
+  'transactions',
+  'goals',
+  'category_budgets',
+  'import_rules',
+];
+
+// Registros criados pelo seed recebem um timestamp antigo para que, ao conectar
+// numa máquina nova, os dados já existentes na nuvem prevaleçam sobre os padrões.
+const SEED_TIMESTAMP = '2000-01-01T00:00:00.000Z';
+
 function initDatabase(customPath = null) {
   let dbPath;
 
@@ -195,6 +211,23 @@ function initDatabase(customPath = null) {
       last_synced_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS sync_tombstones (
+      table_name TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      deleted_at TEXT NOT NULL,
+      PRIMARY KEY (table_name, row_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS statement_files (
+      statement_id TEXT PRIMARY KEY,
+      uploaded_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_control (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      applying_remote INTEGER NOT NULL DEFAULT 0
+    );
+
     CREATE TABLE IF NOT EXISTS cloud_session (
       id TEXT PRIMARY KEY DEFAULT 'current_session',
       user_id TEXT,
@@ -261,6 +294,14 @@ function initDatabase(customPath = null) {
     `ALTER TABLE imported_statements ADD COLUMN updated_at TEXT`,
     `ALTER TABLE imported_statements ADD COLUMN deleted_at TEXT`,
     `ALTER TABLE imported_statements ADD COLUMN sync_status TEXT DEFAULT 'pending'`,
+
+    // Reserva financeira (configuração local)
+    `ALTER TABLE settings ADD COLUMN reserve_target_months INTEGER DEFAULT 6`,
+    `ALTER TABLE settings ADD COLUMN reserve_account_ids TEXT`,
+    `ALTER TABLE settings ADD COLUMN reserve_category_ids TEXT`,
+    `ALTER TABLE settings ADD COLUMN reserve_initial_amount INTEGER DEFAULT 0`,
+    `ALTER TABLE settings ADD COLUMN reserve_auto_detect INTEGER DEFAULT 1`,
+    `ALTER TABLE settings ADD COLUMN reserve_excluded_tx_ids TEXT`,
   ];
   for (const m of migrations) {
     try { db.exec(m); } catch (e) {}
@@ -287,6 +328,38 @@ function initDatabase(customPath = null) {
     try { db.exec(idx); } catch (e) {}
   }
 
+  // 3. Sync change-tracking triggers: any local insert/update/delete marks the row
+  // as pending (or records a tombstone) unless the sync engine itself is applying
+  // remote data (sync_control.applying_remote = 1).
+  db.prepare(`INSERT OR IGNORE INTO sync_control (id, applying_remote) VALUES (1, 0)`).run();
+  db.prepare(`UPDATE sync_control SET applying_remote = 0 WHERE id = 1`).run();
+  const nowExpr = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
+  const isLocalChange = `(SELECT applying_remote FROM sync_control WHERE id = 1) = 0`;
+  for (const t of SYNC_TABLES) {
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_${t}_sync_ins AFTER INSERT ON ${t}
+      FOR EACH ROW WHEN ${isLocalChange}
+      BEGIN
+        DELETE FROM sync_tombstones WHERE table_name = '${t}' AND row_id = NEW.id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_${t}_sync_upd AFTER UPDATE ON ${t}
+      FOR EACH ROW WHEN ${isLocalChange}
+      BEGIN
+        UPDATE ${t} SET
+          sync_status = 'pending',
+          updated_at = CASE WHEN NEW.updated_at IS OLD.updated_at OR NEW.updated_at IS NULL THEN ${nowExpr} ELSE NEW.updated_at END
+        WHERE id = NEW.id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_${t}_sync_del AFTER DELETE ON ${t}
+      FOR EACH ROW WHEN ${isLocalChange}
+      BEGIN
+        INSERT OR REPLACE INTO sync_tombstones (table_name, row_id, deleted_at) VALUES ('${t}', OLD.id, ${nowExpr});
+      END;
+    `);
+  }
+
   // Seed default settings if not existing
   const config = db.prepare(`SELECT id FROM settings WHERE id = 'app_config'`).get();
   if (!config) {
@@ -294,18 +367,18 @@ function initDatabase(customPath = null) {
     db.prepare(`
       INSERT INTO settings (id, user_name, currency, pin_enabled, theme, onboarding_completed, created_at, updated_at)
       VALUES ('app_config', 'Usuário', 'BRL', 0, 'dark', 0, ?, ?)
-    `).run(now, now);
+    `).run(now, SEED_TIMESTAMP);
   }
 
   // Seed default categories if empty
   const categoryCount = db.prepare(`SELECT count(*) as count FROM categories`).get().count;
   if (categoryCount === 0) {
     const insertCat = db.prepare(`
-      INSERT INTO categories (id, name, type, color, icon, active, is_system, created_at)
-      VALUES (?, ?, ?, ?, ?, 1, 1, ?)
+      INSERT INTO categories (id, name, type, color, icon, active, is_system, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)
     `);
 
-    const now = new Date().toISOString();
+    const now = SEED_TIMESTAMP;
     const defaultCategories = [
       // Receitas
       { id: 'cat_salario', name: 'Salário', type: 'income', color: '#10b981', icon: 'Briefcase' },
@@ -327,7 +400,7 @@ function initDatabase(customPath = null) {
 
     const insertMany = db.transaction((categories) => {
       for (const cat of categories) {
-        insertCat.run(cat.id, cat.name, cat.type, cat.color, cat.icon, now);
+        insertCat.run(cat.id, cat.name, cat.type, cat.color, cat.icon, now, now);
       }
     });
     insertMany(defaultCategories);
@@ -342,7 +415,7 @@ function initDatabase(customPath = null) {
     `);
 
     const crypto = require('crypto');
-    const now = new Date().toISOString();
+    const now = SEED_TIMESTAMP;
     const defaultRules = [
       { pattern: 'IFOOD', categoryId: 'cat_alimentacao' },
       { pattern: 'UBER', categoryId: 'cat_transporte' },
@@ -374,6 +447,22 @@ function initDatabase(customPath = null) {
   return db;
 }
 
+const suppressDepth = new WeakMap();
+
+// Executa escritas locais sem que os triggers de sincronização as marquem como
+// alterações do usuário (usado ao aplicar dados vindos da nuvem).
+function withSyncSuppressed(db, fn) {
+  const depth = suppressDepth.get(db) || 0;
+  if (depth === 0) db.prepare(`UPDATE sync_control SET applying_remote = 1 WHERE id = 1`).run();
+  suppressDepth.set(db, depth + 1);
+  try {
+    return fn();
+  } finally {
+    suppressDepth.set(db, depth);
+    if (depth === 0) db.prepare(`UPDATE sync_control SET applying_remote = 0 WHERE id = 1`).run();
+  }
+}
+
 function getDatabase() {
   if (!dbInstance) {
     return initDatabase();
@@ -391,6 +480,9 @@ function closeDatabase() {
 }
 
 module.exports = {
+  SYNC_TABLES,
+  SEED_TIMESTAMP,
+  withSyncSuppressed,
   initDatabase,
   getDatabase,
   closeDatabase,
