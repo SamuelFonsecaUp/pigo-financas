@@ -47,7 +47,33 @@ export interface PackOverride {
   offsetY?: number;
 }
 
+export type AvatarSlot = 'roupa' | 'calca' | 'sapato' | 'cabelo' | 'chapeu';
+
+export interface PackAvatarPart {
+  slot: AvatarSlot;
+  id: string;
+  name: string;
+  file: string; // PNG exportado da camada do modelo (mesma grade)
+  tint?: boolean; // desenhada em cinza: o app multiplica pela cor escolhida
+  unlock?: UnlockRule;
+}
+
+export interface PackAvatar {
+  grid: {
+    cellW: number;
+    cellH: number;
+    anchorX: number;
+    anchorY: number;
+    views: string[];
+    frames: string[];
+  };
+  body: { file: string; skin?: string };
+  order?: AvatarSlot[]; // ordem de empilhamento acima do corpo
+  parts: PackAvatarPart[];
+}
+
 export interface AssetPack {
+  avatar?: PackAvatar;
   mobis: PackMobi[];
   floors: PackSurface[];
   walls: PackSurface[];
@@ -55,6 +81,7 @@ export interface AssetPack {
 }
 
 export const ASSET_PACK: AssetPack = {
+  avatar: (packJson as { avatar?: PackAvatar }).avatar,
   mobis: (packJson.mobis || []) as PackMobi[],
   floors: (packJson.floors || []) as PackSurface[],
   walls: (packJson.walls || []) as PackSurface[],

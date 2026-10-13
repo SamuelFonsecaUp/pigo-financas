@@ -8,9 +8,15 @@
       "w": 1,
       "d": 1,
       "category": "tesouro",
-      "rooms": ["finance", "life"],
+      "rooms": [
+        "finance",
+        "life"
+      ],
       "qty": 1,
-      "unlock": { "type": "level", "level": 2 }
+      "unlock": {
+        "type": "level",
+        "level": 2
+      }
     }
   ],
   "floors": [
@@ -18,7 +24,11 @@
       "id": "parquet",
       "name": "Parquet",
       "file": "pisos/parquet.png",
-      "unlock": { "type": "achievement", "id": "extratos_10", "label": "Arquivista" }
+      "unlock": {
+        "type": "achievement",
+        "id": "extratos_10",
+        "label": "Arquivista"
+      }
     }
   ],
   "walls": [
@@ -26,8 +36,87 @@
       "id": "tijolinho",
       "name": "Tijolinho",
       "file": "paredes/tijolinho.png",
-      "unlock": { "type": "level", "level": 4 }
+      "unlock": {
+        "type": "level",
+        "level": 4
+      }
     }
   ],
-  "overrides": {}
+  "overrides": {},
+  "avatar": {
+    "grid": {
+      "cellW": 64,
+      "cellH": 112,
+      "anchorX": 32,
+      "anchorY": 104,
+      "views": [
+        "frente",
+        "frente_34",
+        "perfil",
+        "costas_34",
+        "costas"
+      ],
+      "frames": [
+        "parado",
+        "andar_1",
+        "andar_2",
+        "andar_3",
+        "andar_4",
+        "sentado"
+      ]
+    },
+    "body": {
+      "file": "avatar/corpo.png",
+      "skin": "#fdc996"
+    },
+    "order": [
+      "sapato",
+      "calca",
+      "roupa",
+      "cabelo",
+      "chapeu"
+    ],
+    "parts": [
+      {
+        "slot": "roupa",
+        "id": "camisa",
+        "name": "Camisa",
+        "file": "avatar/roupa/camisa.png",
+        "tint": true,
+        "unlock": {
+          "type": "default"
+        }
+      },
+      {
+        "slot": "calca",
+        "id": "padrao",
+        "name": "Calça",
+        "file": "avatar/calca/padrao.png",
+        "tint": true,
+        "unlock": {
+          "type": "default"
+        }
+      },
+      {
+        "slot": "sapato",
+        "id": "tenis",
+        "name": "Tênis",
+        "file": "avatar/sapato/tenis.png",
+        "tint": true,
+        "unlock": {
+          "type": "default"
+        }
+      },
+      {
+        "slot": "cabelo",
+        "id": "curto",
+        "name": "Curto",
+        "file": "avatar/cabelo/curto.png",
+        "tint": true,
+        "unlock": {
+          "type": "default"
+        }
+      }
+    ]
+  }
 }

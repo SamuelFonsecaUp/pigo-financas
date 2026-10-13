@@ -14,7 +14,9 @@ Arquivos de código relacionados:
 | `src/game/pack/pack.json` | Catálogo do pacote oficial |
 | `src/game/pack.ts` | Carregador do pacote (empacota automaticamente todo PNG da pasta) |
 | `src/game/mobis.tsx` | Mobis desenhados em código (24) e suas conquistas |
-| `src/game/avatar.tsx` | Avatar: partes, roupas, cabelos, acessórios e o que libera cada um |
+| `src/game/avatar.tsx` | Opções do provador (cabelos, roupas, acessórios) e o que libera cada uma |
+| `src/game/avatarLayers.ts` | Empilha as camadas do modelo do avatar (quadros, direções, tingimento) |
+| `design/avatar/modelo_avatar.psd` | **Modelo padrão** para desenhar o avatar no Photoshop |
 | `src/game/room.ts` | Plantas de quarto (mapas de altura) e o nível de cada uma |
 | `src/game/sprites.ts` | Sprites pequenos (Pigo pet, goblins, dragão…) |
 
@@ -67,6 +69,14 @@ src/game/pack/
 - **`walkable`**: tapetes (dá para pisar e pôr móveis em cima).
 
 Depois de adicionar: `npm test` confere se todo arquivo citado existe, e `npm run release` publica para todos.
+
+## Avatar
+
+O avatar é desenhado no **modelo padrão do Photoshop**: [`design/avatar/modelo_avatar.psd`](../design/avatar/modelo_avatar.psd) — guia completo em [`design/avatar/LEIA-ME.md`](../design/avatar/LEIA-ME.md).
+
+- Grade fixa de 6 quadros (parado, andar 1–4, sentado) × 5 vistas (frente, frente 3/4, perfil, costas 3/4, costas), células de 64 × 112 px, pés na âncora (32, 104).
+- Uma camada por peça (`corpo`, `sapato`, `calca`, `roupa`, `cabelo`, `chapeu`), exportada como PNG para `src/game/pack/avatar/<slot>/<id>.png` e cadastrada em `pack.json → avatar.parts`.
+- Peças em cinza com `"tint": true` são tingidas pela cor escolhida no provador.
 
 ## Resolução e como desenhar
 

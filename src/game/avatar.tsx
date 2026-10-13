@@ -16,7 +16,9 @@ export interface AvatarLook {
   hairColor: string;
   top: string;
   topColor: string;
+  pants?: string; // id da calça no pacote de avatar
   pantsColor: string;
+  shoes?: string; // id do sapato no pacote de avatar
   shoesColor: string;
   hat: string;
   hatColor: string;
@@ -28,7 +30,9 @@ export const DEFAULT_LOOK: AvatarLook = {
   hairColor: '#5d3a1a',
   top: 'camiseta',
   topColor: '#3b5dc9',
+  pants: 'padrao',
   pantsColor: '#333c57',
+  shoes: 'tenis',
   shoesColor: '#1a1c2c',
   hat: 'nenhum',
   hatColor: '#b13e53',
@@ -54,6 +58,7 @@ export const HAIR_STYLES: WardrobeOption[] = [
   { id: 'franja', name: 'Franja', unlock: { type: 'level', level: 3 } },
   { id: 'espetado', name: 'Espetado', unlock: { type: 'level', level: 6 } },
   { id: 'black', name: 'Black Power', unlock: { type: 'achievement', id: 'categorizador_100', label: 'Organizador' } },
+  { id: 'moicano', name: 'Moicano', unlock: { type: 'level', level: 8 } },
 ];
 
 export const TOP_STYLES: WardrobeOption[] = [

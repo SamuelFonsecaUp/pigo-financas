@@ -18,6 +18,8 @@ import {
   TOP_STYLES, WardrobeOption, dirFromStep,
 } from '../game/avatar';
 import { ASSET_PACK, packFileUrl } from '../game/pack';
+import { AvatarFrame, SheetAvatar, SheetAvatarViews, useAvatarPack } from '../game/SheetAvatar';
+import { AvatarSlot } from '../game/pack';
 
 // Resolução: unit 2 = tiles de 64x32 px
 const UNIT = 2;
@@ -137,6 +139,7 @@ interface Actor {
 
 export const RoomView: React.FC = () => {
   const { game, showToast } = useFinancial();
+  const avatarPack = useAvatarPack();
   const [roomId, setRoomId] = useState<RoomId>('finance');
   const [layouts, setLayouts] = useState<RoomLayouts | null>(null);
   const [look, setLook] = useState<AvatarLook>(DEFAULT_LOOK);
@@ -150,7 +153,7 @@ export const RoomView: React.FC = () => {
   const [scale, setScale] = useState(1);
   const [avatar, setAvatar] = useState<Actor>({ pos: [0, 5], path: [], dir: 'se' });
   const [pet, setPet] = useState<Actor>({ pos: [2, 2], path: [], dir: 'se' });
-  const [walkFrame, setWalkFrame] = useState<1 | 2>(1);
+  const [walkFrame, setWalkFrame] = useState<1 | 2 | 3 | 4>(1);
   const [bubble, setBubble] = useState<string | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -389,7 +392,7 @@ export const RoomView: React.FC = () => {
         return { ...p, pos: next, path: rest, dir: dirFromStep(next[0] - p.pos[0], next[1] - p.pos[1], p.dir) };
       });
     }, STEP_MS);
-    const f = setInterval(() => setWalkFrame(fr => (fr === 1 ? 2 : 1)), STEP_MS / 2);
+    const f = setInterval(() => setWalkFrame(fr => ((fr % 4) + 1) as 1 | 2 | 3 | 4), STEP_MS / 2);
     return () => { clearInterval(t); clearInterval(f); };
   }, []);
 
@@ -698,10 +701,12 @@ export const RoomView: React.FC = () => {
   // Avatar
   const sitItem = avatar.sitUid ? layout.items.find(i => i.uid === avatar.sitUid) : null;
   const sitDef = sitItem ? lookup(sitItem.mobiId) : null;
-  // sentado: o quadril (≈12 unidades acima do pé na pose sentada) apoia na altura do assento
-  const avZ = (tileHeight(pm, avatar.pos[0], avatar.pos[1]) ?? 0) * STEP_Z + (sitDef ? (sitDef.seatZ ?? 8) - 12 : 0);
+  // sentado: com o corpo base, os joelhos ficam na altura do assento; no desenho procedural, o quadril
+  const sitOffset = avatarPack ? -1 : -12;
+  const avZ = (tileHeight(pm, avatar.pos[0], avatar.pos[1]) ?? 0) * STEP_Z + (sitDef ? (sitDef.seatZ ?? 8) + sitOffset : 0);
   const [avX, avY] = project(o, avatar.pos[0] + 0.5, avatar.pos[1] + 0.5, avZ);
   const moving = avatar.path.length > 0;
+  const avatarFrame: AvatarFrame = sitDef ? 'sentado' : moving ? (['andar_1', 'andar_2', 'andar_3', 'andar_4'] as const)[walkFrame - 1] : 'parado';
 
   // Balão de fala: largura pelo texto, sempre dentro da cena
   let bubbleNode: React.ReactNode = null;
@@ -709,7 +714,7 @@ export const RoomView: React.FC = () => {
     const text = bubble.length > 44 ? `${bubble.slice(0, 43)}…` : bubble;
     const bw = text.length * 6.4 + 16;
     const bh = 18;
-    const lift = sitDef ? 56 : 70;
+    const lift = avatarPack ? (sitDef ? 76 : 90) : (sitDef ? 56 : 70);
     const avXGuess = project(o, avatar.pos[0] + 0.5, avatar.pos[1] + 0.5)[0];
     const left = avXGuess - bw / 2;
     const dx = Math.max(6 - left, 0) + Math.min(scene.width - 6 - (left + bw), 0);
@@ -727,7 +732,11 @@ export const RoomView: React.FC = () => {
     node: (
       <g key="avatar" style={{ pointerEvents: 'none', transform: `translate(${avX}px, ${avY}px)`, transition: `transform ${STEP_MS}ms linear` }}>
         <ellipse cx={0} cy={0} rx={12} ry={5} fill="#000" opacity={0.2} />
-        <Avatar look={look} dir={avatar.dir} frame={moving ? walkFrame : 0} sitting={Boolean(sitDef)} x={0} y={1} />
+        {avatarPack ? (
+          <SheetAvatar pack={avatarPack} look={look} dir={avatar.dir} frame={avatarFrame} x={0} y={2} />
+        ) : (
+          <Avatar look={look} dir={avatar.dir} frame={moving ? ((walkFrame % 2) + 1) as 1 | 2 : 0} sitting={Boolean(sitDef)} x={0} y={1} />
+        )}
         {bubbleNode}
       </g>
     ),
@@ -807,6 +816,18 @@ export const RoomView: React.FC = () => {
       </div>
     </div>
   );
+
+  // Linha do provador com as peças do pacote oficial de um slot
+  const packSlotRow = (label: string, slot: AvatarSlot, current: string | undefined, optional: boolean, onPick: (id: string) => void) => {
+    const parts = (avatarPack?.parts || []).filter(p => p.slot === slot);
+    const options: WardrobeOption[] = [
+      ...(optional ? [{ id: 'nenhum', name: 'Nenhum', unlock: { type: 'default' as const } }] : []),
+      ...parts.map(p => ({ id: p.id, name: p.name, unlock: p.unlock || { type: 'default' as const } })),
+    ];
+    if (options.length === 0) return null;
+    const selected = current && options.some(o => o.id === current) ? current : (optional ? 'nenhum' : options[0].id);
+    return wardrobeRow(label, options, selected, onPick);
+  };
 
   const swatches = (label: string, colors: string[], current: string, onPick: (c: string) => void) => (
     <div>
@@ -908,7 +929,11 @@ export const RoomView: React.FC = () => {
     <div ref={wrapperRef} className={`h-full flex flex-col ${isFullscreen ? 'bg-[#0b0e1a] p-3' : 'p-4'} gap-3`}>
       <div className="flex flex-wrap items-center justify-between gap-3 shrink-0">
         <div className="flex items-center gap-3">
-          <AvatarPreview look={look} size={44} />
+          {avatarPack ? (
+            <span className="w-8"><SheetAvatarViews pack={avatarPack} look={look} height={44} dirs={['s']} /></span>
+          ) : (
+            <AvatarPreview look={look} size={44} />
+          )}
           <div>
             <h1 className="text-xl font-pixel font-bold text-white leading-none">{room.name}</h1>
             <p className="text-[11px] text-slate-400 mt-1">
@@ -1047,19 +1072,45 @@ export const RoomView: React.FC = () => {
 
               {panel === 'visual' && (
                 <div className="space-y-3">
-                  <div className="flex items-end justify-center gap-4 p-3 rounded-xl bg-gradient-to-b from-slate-800/60 to-slate-950/60 border border-slate-800">
-                    <AvatarPreview look={look} dir="se" size={128} />
-                    <AvatarPreview look={look} dir="nw" size={128} />
+                  <div className="flex items-end justify-center gap-4 p-2 rounded-xl bg-gradient-to-b from-slate-200 to-slate-50 border border-slate-800">
+                    {avatarPack ? (
+                      <SheetAvatarViews pack={avatarPack} look={look} height={120} />
+                    ) : (
+                      <>
+                        <AvatarPreview look={look} dir="se" size={128} />
+                        <AvatarPreview look={look} dir="nw" size={128} />
+                      </>
+                    )}
                   </div>
                   {swatches('Pele', SKIN_TONES, look.skin, c => updateLook({ skin: c }))}
-                  {wardrobeRow('Cabelo', HAIR_STYLES, look.hair, id => updateLook({ hair: id }))}
-                  {swatches('Cor do cabelo', PALETTE_CHOICES, look.hairColor, c => updateLook({ hairColor: c }))}
-                  {wardrobeRow('Roupa', TOP_STYLES, look.top, id => updateLook({ top: id }))}
-                  {swatches('Cor da roupa', PALETTE_CHOICES, look.topColor, c => updateLook({ topColor: c }))}
-                  {swatches('Calça', PALETTE_CHOICES, look.pantsColor, c => updateLook({ pantsColor: c }))}
-                  {swatches('Sapatos', PALETTE_CHOICES, look.shoesColor, c => updateLook({ shoesColor: c }))}
-                  {wardrobeRow('Acessório', HATS, look.hat, id => updateLook({ hat: id }))}
-                  {swatches('Cor do acessório', PALETTE_CHOICES, look.hatColor, c => updateLook({ hatColor: c }))}
+                  {avatarPack ? (
+                    <>
+                      {packSlotRow('Cabelo', 'cabelo', look.hair, true, id => updateLook({ hair: id }))}
+                      {swatches('Cor do cabelo', PALETTE_CHOICES, look.hairColor, c => updateLook({ hairColor: c }))}
+                      {packSlotRow('Roupa', 'roupa', look.top, false, id => updateLook({ top: id }))}
+                      {swatches('Cor da roupa', PALETTE_CHOICES, look.topColor, c => updateLook({ topColor: c }))}
+                      {packSlotRow('Calça', 'calca', look.pants, false, id => updateLook({ pants: id }))}
+                      {swatches('Cor da calça', PALETTE_CHOICES, look.pantsColor, c => updateLook({ pantsColor: c }))}
+                      {packSlotRow('Sapatos', 'sapato', look.shoes, false, id => updateLook({ shoes: id }))}
+                      {swatches('Cor dos sapatos', PALETTE_CHOICES, look.shoesColor, c => updateLook({ shoesColor: c }))}
+                      {packSlotRow('Acessório', 'chapeu', look.hat, true, id => updateLook({ hat: id }))}
+                      {swatches('Cor do acessório', PALETTE_CHOICES, look.hatColor, c => updateLook({ hatColor: c }))}
+                      <p className="text-[10px] text-slate-500">
+                        Novas peças: desenhe no modelo design/avatar/modelo_avatar.psd, exporte a camada para src/game/pack/avatar e cadastre em pack.json.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      {wardrobeRow('Cabelo', HAIR_STYLES, look.hair, id => updateLook({ hair: id }))}
+                      {swatches('Cor do cabelo', PALETTE_CHOICES, look.hairColor, c => updateLook({ hairColor: c }))}
+                      {wardrobeRow('Roupa', TOP_STYLES, look.top, id => updateLook({ top: id }))}
+                      {swatches('Cor da roupa', PALETTE_CHOICES, look.topColor, c => updateLook({ topColor: c }))}
+                      {swatches('Calça', PALETTE_CHOICES, look.pantsColor, c => updateLook({ pantsColor: c }))}
+                      {swatches('Sapatos', PALETTE_CHOICES, look.shoesColor, c => updateLook({ shoesColor: c }))}
+                      {wardrobeRow('Acessório', HATS, look.hat, id => updateLook({ hat: id }))}
+                      {swatches('Cor do acessório', PALETTE_CHOICES, look.hatColor, c => updateLook({ hatColor: c }))}
+                    </>
+                  )}
                 </div>
               )}
 
