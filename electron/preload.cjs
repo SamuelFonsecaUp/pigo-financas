@@ -58,6 +58,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Banking OFX & CSV Import & Vault
   openBankingFileDialog: () => ipcRenderer.invoke('banking:openFile'),
+
+  // Habits Module
+  getHabits: (includeArchived) => ipcRenderer.invoke('habits:get', includeArchived),
+  createHabit: (data) => ipcRenderer.invoke('habits:create', data),
+  updateHabit: (id, data) => ipcRenderer.invoke('habits:update', id, data),
+  deleteHabit: (id) => ipcRenderer.invoke('habits:delete', id),
+  toggleHabitDay: (habitId, date, value, notes) => ipcRenderer.invoke('habits:toggleDay', habitId, date, value, notes),
+  getHabitHeatmap: (habitId, year) => ipcRenderer.invoke('habits:getHeatmap', habitId, year),
+  getHabitsOverview: () => ipcRenderer.invoke('habits:getOverview'),
+
   parseOFX: (content) => ipcRenderer.invoke('banking:parseOFX', content),
   parseCSV: (content, customMapping) => ipcRenderer.invoke('banking:parseCSV', content, customMapping),
   reconcileImport: (data) => ipcRenderer.invoke('banking:reconcile', data),
@@ -147,4 +157,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Demo Data
   seedDemoData: () => ipcRenderer.invoke('demo:seed'),
   clearDemoData: () => ipcRenderer.invoke('demo:clear'),
+
+  // Tools Module: Notes, Mindmaps & Password Vault
+  getNotes: () => ipcRenderer.invoke('tools:getNotes'),
+  createNote: (data) => ipcRenderer.invoke('tools:createNote', data),
+  updateNote: (id, data) => ipcRenderer.invoke('tools:updateNote', id, data),
+  deleteNote: (id) => ipcRenderer.invoke('tools:deleteNote', id),
+
+  getMindmaps: () => ipcRenderer.invoke('tools:getMindmaps'),
+  createMindmap: (data) => ipcRenderer.invoke('tools:createMindmap', data),
+  updateMindmap: (id, data) => ipcRenderer.invoke('tools:updateMindmap', id, data),
+  deleteMindmap: (id) => ipcRenderer.invoke('tools:deleteMindmap', id),
+
+  getVaultItems: () => ipcRenderer.invoke('tools:getVaultItems'),
+  createVaultItem: (data) => ipcRenderer.invoke('tools:createVaultItem', data),
+  updateVaultItem: (id, data) => ipcRenderer.invoke('tools:updateVaultItem', id, data),
+  deleteVaultItem: (id) => ipcRenderer.invoke('tools:deleteVaultItem', id),
 });

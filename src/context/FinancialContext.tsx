@@ -17,6 +17,7 @@ import {
   GameUnlock,
   GameUnlocksResult,
 } from '../types';
+import { isPrivacyModeEnabled, setPrivacyModeFlag } from '../utils/formatters';
 
 // Intervalo da sincronização automática em segundo plano
 const AUTO_SYNC_INTERVAL_MS = 3 * 60 * 1000;
@@ -27,8 +28,7 @@ export type AppView =
   | 'accounts'
   | 'reserve'
   | 'journey'
-  | 'kingdom'
-  | 'room'
+  | 'habits'
   | 'cards'
   | 'budgets'
   | 'calendar'
@@ -37,7 +37,12 @@ export type AppView =
   | 'reports'
   | 'settings'
   | 'import'
-  | 'intelligence';
+  | 'intelligence'
+  | 'tools_notes'
+  | 'tools_mindmap'
+  | 'tools_vault';
+
+export type AppModule = 'finance' | 'habits' | 'tools' | 'journey';
 
 interface ToastInfo {
   id: string;
@@ -48,6 +53,8 @@ interface ToastInfo {
 interface FinancialContextType {
   currentView: AppView;
   setCurrentView: (view: AppView) => void;
+  activeModule: AppModule;
+  setActiveModule: (mod: AppModule) => void;
   isLocked: boolean;
   unlockApp: (pin: string) => Promise<boolean>;
   lockApp: () => void;
@@ -93,6 +100,8 @@ interface FinancialContextType {
   // Theme (Dark / Light)
   theme: 'dark' | 'light';
   toggleTheme: () => Promise<void>;
+  privacyMode: boolean;
+  togglePrivacyMode: () => void;
 
   // Gamificação (Jornada)
   game: GameOverview | null;
@@ -118,6 +127,36 @@ const FinancialContext = createContext<FinancialContextType | undefined>(undefin
 
 export const FinancialProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentView, setCurrentView] = useState<AppView>('dashboard');
+  const [activeModule, setActiveModuleState] = useState<AppModule>('finance');
+
+  const setActiveModule = useCallback((mod: AppModule) => {
+    setActiveModuleState(mod);
+    if (mod === 'habits') {
+      if (!currentView.startsWith('habits')) setCurrentView('habits');
+    } else if (mod === 'journey') {
+      if (!currentView.startsWith('journey')) setCurrentView('journey');
+    } else if (mod === 'tools') {
+      if (!currentView.startsWith('tools')) setCurrentView('tools_notes');
+    } else {
+      if (currentView.startsWith('habits') || currentView.startsWith('journey') || currentView.startsWith('tools')) {
+        setCurrentView('dashboard');
+      }
+    }
+  }, [currentView]);
+
+  const handleSetCurrentView = useCallback((view: AppView) => {
+    setCurrentView(view);
+    if (view.startsWith('habits')) {
+      setActiveModuleState('habits');
+    } else if (view.startsWith('journey')) {
+      setActiveModuleState('journey');
+    } else if (view.startsWith('tools')) {
+      setActiveModuleState('tools');
+    } else if (view !== 'settings') {
+      setActiveModuleState('finance');
+    }
+  }, []);
+
   const [isLocked, setIsLocked] = useState<boolean>(false);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -132,13 +171,30 @@ export const FinancialProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [toasts, setToasts] = useState<ToastInfo[]>([]);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [privacyMode, setPrivacyMode] = useState<boolean>(() => isPrivacyModeEnabled());
+
+  const togglePrivacyMode = useCallback(() => {
+    setPrivacyMode((prev) => {
+      const next = !prev;
+      setPrivacyModeFlag(next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.altKey && (e.key === 'p' || e.key === 'P')) {
+        e.preventDefault();
+        togglePrivacyMode();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [togglePrivacyMode]);
 
   const applyTheme = (t: 'dark' | 'light') => {
     setTheme(t);
-    if (t === 'light') {
-      document.documentElement.classList.remove('dark');
-      document.documentElement.classList.add('light');
-    } else {
+    if (false) {} else {
       document.documentElement.classList.remove('light');
       document.documentElement.classList.add('dark');
     }
@@ -470,7 +526,9 @@ export const FinancialProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     <FinancialContext.Provider
       value={{
         currentView,
-        setCurrentView,
+        setCurrentView: handleSetCurrentView,
+        activeModule,
+        setActiveModule,
         isLocked,
         unlockApp,
         lockApp,
@@ -508,6 +566,8 @@ export const FinancialProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         navigateToAccountTransactions,
         theme,
         toggleTheme,
+        privacyMode,
+        togglePrivacyMode,
         game,
         refreshGame,
         celebrations,

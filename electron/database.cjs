@@ -228,6 +228,73 @@ function initDatabase(customPath = null) {
       applying_remote INTEGER NOT NULL DEFAULT 0
     );
 
+    
+    CREATE TABLE IF NOT EXISTS habits (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      category TEXT DEFAULT 'geral',
+      color TEXT DEFAULT '#38bdf8',
+      icon TEXT DEFAULT 'CheckCircle',
+      type TEXT DEFAULT 'boolean',
+      target_value REAL DEFAULT 1,
+      target_unit TEXT,
+      frequency_type TEXT DEFAULT 'daily',
+      frequency_days TEXT,
+      frequency_times INTEGER DEFAULT 7,
+      period_of_day TEXT DEFAULT 'anytime',
+      archived INTEGER DEFAULT 0,
+      position INTEGER DEFAULT 0,
+      created_at TEXT,
+      updated_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS habit_logs (
+      id TEXT PRIMARY KEY,
+      habit_id TEXT NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
+      date TEXT NOT NULL,
+      completed INTEGER DEFAULT 1,
+      value REAL DEFAULT 1,
+      notes TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      UNIQUE(habit_id, date)
+    );
+
+    CREATE TABLE IF NOT EXISTS notes (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      content TEXT DEFAULT '',
+      category TEXT DEFAULT 'ideias',
+      color TEXT DEFAULT '#a855f7',
+      pinned INTEGER DEFAULT 0,
+      checklist_json TEXT DEFAULT '[]',
+      created_at TEXT,
+      updated_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS mindmaps (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      nodes_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT,
+      updated_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS password_vault (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      category TEXT DEFAULT 'outros',
+      username TEXT DEFAULT '',
+      password_encrypted TEXT NOT NULL,
+      url TEXT DEFAULT '',
+      notes TEXT DEFAULT '',
+      favorite INTEGER DEFAULT 0,
+      created_at TEXT,
+      updated_at TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS cloud_session (
       id TEXT PRIMARY KEY DEFAULT 'current_session',
       user_id TEXT,

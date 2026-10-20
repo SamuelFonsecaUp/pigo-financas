@@ -1,13 +1,49 @@
 import React, { useState, useEffect } from 'react';
-import { Minus, Square, Copy, X, RefreshCw, Bell, Printer, FileSpreadsheet, Sun, Moon } from 'lucide-react';
-import { useFinancial } from '../context/FinancialContext';
+import {
+  Minus,
+  Square,
+  Copy,
+  X,
+  RefreshCw,
+  Bell,
+  Printer,
+  FileSpreadsheet,
+  Sun,
+  Moon,
+  ChevronRight,
+  CheckSquare,
+  Eye,
+  EyeOff,
+} from 'lucide-react';
+import { useFinancial, AppModule } from '../context/FinancialContext';
+import { useHabits } from '../context/HabitsContext';
 import { SyncStatusBadge } from './SyncStatusBadge';
 import { XpPill } from './GameWidgets';
+
+const MODULE_BADGE: Record<AppModule, { label: string; className: string }> = {
+  finance: {
+    label: 'Pigo Finanças',
+    className: 'bg-brand-500/12 text-brand-400 border-brand-500/25',
+  },
+  habits: {
+    label: 'Pigo Hábitos',
+    className: 'bg-cyan-500/12 text-cyan-300 border-cyan-500/25',
+  },
+  tools: {
+    label: 'Pigo Ferramentas',
+    className: 'bg-fuchsia-500/12 text-fuchsia-300 border-fuchsia-500/25',
+  },
+  journey: {
+    label: 'Pigo Jornada',
+    className: 'bg-amber-500/12 text-amber-300 border-amber-500/25',
+  },
+};
 
 export const Navbar: React.FC = () => {
   const {
     currentView,
     setCurrentView,
+    activeModule,
     refreshAll,
     isLoading,
     unreadNotificationsCount,
@@ -15,7 +51,10 @@ export const Navbar: React.FC = () => {
     pendingImportSession,
     theme,
     toggleTheme,
+    privacyMode,
+    togglePrivacyMode,
   } = useFinancial();
+  const { overview } = useHabits();
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
@@ -45,33 +84,50 @@ export const Navbar: React.FC = () => {
 
   const viewTitles: Record<string, string> = {
     dashboard: 'Visão Geral',
+    intelligence: 'Inteligência Financeira',
     transactions: 'Lançamentos',
-    accounts: 'Minhas Contas',
+    accounts: 'Contas Bancárias',
     cards: 'Cartões de Crédito',
     budgets: 'Orçamentos & Tetos de Gastos',
     calendar: 'Calendário & Projeção Financeira',
     categories: 'Categorias',
     goals: 'Metas Financeiras',
-    reserve: 'Reserva Financeira',
-    journey: 'Jornada & Conquistas',
-    kingdom: 'Reino do Pigo',
-    room: 'Quarto & Mobis',
+    reserve: 'Reserva de Emergência',
     reports: 'Relatórios & Gráficos',
-    settings: 'Configurações do Sistema',
     import: 'Importar Extrato Bancário (OFX / CSV)',
+    habits: 'Hoje • Check-in Diário',
+    habits_week: 'Grade Semanal (7 Dias)',
+    habits_analytics: 'Consistência & Mapas de Calor',
+    habits_manage: 'Meus Hábitos • Catálogo',
+    journey: 'Visão Geral & Nível',
+    journey_missions: 'Missões da Semana',
+    journey_achievements: 'Sala de Troféus & Conquistas',
+    journey_history: 'Histórico de XP',
+    tools_notes: 'Anotações & Segundo Cérebro',
+    tools_mindmap: 'Mapas Mentais Interativos',
+    tools_vault: 'Cofre de Senhas Criptografado',
+    settings: 'Configurações do Sistema',
   };
 
+  const modBadge = MODULE_BADGE[activeModule];
+
   return (
-    <header className="h-12 border-b border-slate-800/80 bg-slate-950/60 flex items-center justify-between px-4 select-none shrink-0 backdrop-blur-md">
-      {/* Draggable Title Area */}
-      <div className="flex items-center gap-3">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-          {viewTitles[currentView] || 'Meu Financeiro'}
+    <header className="h-12 border-b border-slate-800/80 bg-slate-950/70 flex items-center justify-between px-4 select-none shrink-0 backdrop-blur-md relative z-20 app-drag">
+      {/* Breadcrumb Title Area */}
+      <div className="flex items-center gap-2">
+        <span
+          className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md border ${modBadge.className}`}
+        >
+          {modBadge.label}
+        </span>
+        <ChevronRight className="w-3.5 h-3.5 text-slate-600" />
+        <h2 className="text-xs font-bold tracking-wide text-slate-200">
+          {viewTitles[currentView] || 'Pigo'}
         </h2>
       </div>
 
       {/* Actions and Desktop Window Controls */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 app-no-drag">
         {pendingImportSession && currentView !== 'import' && (
           <button
             onClick={() => setCurrentView('import')}
@@ -83,16 +139,46 @@ export const Navbar: React.FC = () => {
           </button>
         )}
 
+        {/* Quick Habit Progress Pill when outside Habits */}
+        {activeModule !== 'habits' && overview && overview.total > 0 && (
+          <button
+            onClick={() => setCurrentView('habits')}
+            title="Progresso dos hábitos de hoje"
+            className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900/60 hover:bg-slate-800 border border-slate-800 text-[11px] font-semibold text-cyan-300 transition-all"
+          >
+            <CheckSquare className="w-3.5 h-3.5 text-cyan-400" />
+            <span>
+              {overview.completedToday}/{overview.total} hábitos
+            </span>
+          </button>
+        )}
+
         <XpPill />
 
         <SyncStatusBadge />
 
+        {/* Privacy Mode (Olho Mágico) Toggle */}
         <button
-          onClick={toggleTheme}
-          title={theme === 'dark' ? 'Mudar para Modo Claro' : 'Mudar para Modo Escuro'}
-          className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 rounded-lg transition-all"
+          onClick={togglePrivacyMode}
+          title={
+            privacyMode
+              ? 'Mostrar valores financeiros (Alt + P)'
+              : 'Modo Privacidade: ocultar valores em R$ (Alt + P)'
+          }
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-all ${
+            privacyMode
+              ? 'bg-amber-500/15 border-amber-500/35 text-amber-300 hover:bg-amber-500/25'
+              : 'p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border-transparent'
+          }`}
         >
-          {theme === 'dark' ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5 text-slate-600" />}
+          {privacyMode ? (
+            <>
+              <EyeOff className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden md:inline">Valores Ocultos</span>
+            </>
+          ) : (
+            <Eye className="w-3.5 h-3.5" />
+          )}
         </button>
 
         <button

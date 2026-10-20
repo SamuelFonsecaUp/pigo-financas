@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { initDatabase, closeDatabase } = require('./database.cjs');
@@ -52,7 +52,9 @@ function createWindow() {
     height: 820,
     minWidth: 1060,
     minHeight: 680,
-    backgroundColor: '#090d16',
+    frame: false,
+    autoHideMenuBar: true,
+    backgroundColor: '#0c0c0e',
     title: 'Pigo - Finanças Pessoais',
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
@@ -63,6 +65,9 @@ function createWindow() {
     },
     show: false, // Wait until ready-to-show to avoid white flicker
   });
+
+  Menu.setApplicationMenu(null);
+  mainWindow.setMenuBarVisibility(false);
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
@@ -454,6 +459,32 @@ app.whenReady().then(() => {
   // Demo Data
   handleIpc('demo:seed', () => service.seedDemoData());
   handleIpc('demo:clear', () => service.clearDemoData());
+
+  // Habits Module
+  handleIpc('habits:get', (includeArchived) => service.getHabits(includeArchived));
+  handleIpc('habits:create', (data) => service.createHabit(data));
+  handleIpc('habits:update', (id, data) => service.updateHabit(id, data));
+  handleIpc('habits:delete', (id) => service.deleteHabit(id));
+  handleIpc('habits:toggleDay', (habitId, date, value, notes) => service.toggleHabitDay(habitId, date, value, notes));
+  handleIpc('habits:getHeatmap', (habitId, year) => service.getHabitHeatmap(habitId, year));
+  handleIpc('habits:getOverview', () => service.getHabitsOverview());
+
+  // Tools Module: Notes, Mindmaps & Password Vault
+  handleIpc('tools:getNotes', () => service.getNotes());
+  handleIpc('tools:createNote', (data) => service.createNote(data));
+  handleIpc('tools:updateNote', (id, data) => service.updateNote(id, data));
+  handleIpc('tools:deleteNote', (id) => service.deleteNote(id));
+
+  handleIpc('tools:getMindmaps', () => service.getMindmaps());
+  handleIpc('tools:createMindmap', (data) => service.createMindmap(data));
+  handleIpc('tools:updateMindmap', (id, data) => service.updateMindmap(id, data));
+  handleIpc('tools:deleteMindmap', (id) => service.deleteMindmap(id));
+
+  handleIpc('tools:getVaultItems', () => service.getVaultItems());
+  handleIpc('tools:createVaultItem', (data) => service.createVaultItem(data));
+  handleIpc('tools:updateVaultItem', (id, data) => service.updateVaultItem(id, data));
+  handleIpc('tools:deleteVaultItem', (id) => service.deleteVaultItem(id));
+
 
   createWindow();
   setupAutoUpdater();

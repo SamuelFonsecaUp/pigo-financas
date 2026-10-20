@@ -87,6 +87,52 @@ describe('Gamification (Pigo RPG Financeiro)', () => {
     expect(service.getGameUnlocks().unlocks).toHaveLength(0);
   });
 
+
+  it('has calibrated XP and a comprehensive catalog of achievements', () => {
+    const o = service.getGameOverview();
+    expect(o.achievements.length).toBeGreaterThanOrEqual(70);
+    
+    // Check rarity XP values
+    const comum = o.achievements.filter((a: any) => a.rarity === 'comum');
+    const raro = o.achievements.filter((a: any) => a.rarity === 'raro');
+    const epico = o.achievements.filter((a: any) => a.rarity === 'epico');
+    const lendario = o.achievements.filter((a: any) => a.rarity === 'lendario');
+
+    expect(comum.length).toBeGreaterThan(0);
+    expect(raro.length).toBeGreaterThan(0);
+    expect(epico.length).toBeGreaterThan(0);
+    expect(lendario.length).toBeGreaterThan(0);
+
+    expect(comum[0].xp).toBe(15);
+    expect(raro[0].xp).toBe(35);
+    expect(epico[0].xp).toBe(75);
+    expect(lendario[0].xp).toBe(150);
+
+    // Verify categories are present
+    const categories = new Set(o.achievements.map((a: any) => a.category));
+    expect(categories.has('imports')).toBe(true);
+    expect(categories.has('categorization')).toBe(true);
+    expect(categories.has('habits')).toBe(true);
+    expect(categories.has('goals')).toBe(true);
+    expect(categories.has('positive_months')).toBe(true);
+  });
+
+  it('awards real-time XP for habit check-ins and Perfect Habit Day bonus', () => {
+    const h1 = service.habits.createHabit({ name: 'Beber Água', category: 'saude' });
+    const h2 = service.habits.createHabit({ name: 'Zero Gasto Impulsivo', category: 'financas' });
+    const today = new Date().toISOString().slice(0, 10);
+
+    service.habits.toggleHabitDay(h1.id, today);
+    let o = service.getGameOverview();
+    expect(o.xpByKind.habit).toBe(5);
+
+    service.habits.toggleHabitDay(h2.id, today);
+    o = service.getGameOverview();
+    // 2 check-ins (2 * 5 = 10) + Perfect Day bonus (25) = 35 XP
+    expect(o.xpByKind.habit).toBe(35);
+    const unlockedIds = o.achievements.filter((a: any) => a.unlocked).map((a: any) => a.id);
+    expect(unlockedIds).toEqual(expect.arrayContaining(['habito_primeiro', 'habito_checkin_1']));
+  });
   it('translates finances into the kingdom world state', () => {
     const acc = service.createAccount({ name: 'Nubank', type: 'checking', initialBalance: 100000, color: '#8b5cf6' });
     const savings = service.createAccount({ name: 'Caixinha', type: 'savings', initialBalance: 0 });

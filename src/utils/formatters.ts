@@ -1,5 +1,34 @@
+const PRIVACY_MODE_STORAGE_KEY = 'pigo_privacy_mode';
+
+let privacyModeEnabled = (() => {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(PRIVACY_MODE_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+})();
+
+export function setPrivacyModeFlag(enabled: boolean): void {
+  privacyModeEnabled = enabled;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(PRIVACY_MODE_STORAGE_KEY, enabled ? '1' : '0');
+    }
+  } catch {}
+}
+
+export function isPrivacyModeEnabled(): boolean {
+  return privacyModeEnabled;
+}
+
 // Format cents to Brazilian Real (e.g. 2590 -> "R$ 25,90")
 export function formatCurrency(cents: number, showSign = false): string {
+  if (privacyModeEnabled) {
+    if (cents < 0) return '- R$ •••••';
+    if (showSign && cents > 0) return '+ R$ •••••';
+    return 'R$ •••••';
+  }
+
   const isNegative = cents < 0;
   const absValue = Math.abs(cents) / 100;
   const formatted = absValue.toLocaleString('pt-BR', {

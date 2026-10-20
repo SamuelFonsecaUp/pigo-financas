@@ -77,7 +77,7 @@ class ImportViewErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundar
   render() {
     if (this.state.hasError) {
       return (
-        <div className="flex h-full w-full flex-col items-center justify-center p-8 bg-[#090d16] text-white">
+        <div className="flex h-full w-full flex-col items-center justify-center p-8 bg-[#0c0c0e] text-white">
           <div className="max-w-md w-full p-6 bg-slate-900 border border-slate-800 rounded-2xl text-center space-y-4 shadow-2xl">
             <div className="w-12 h-12 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center mx-auto">
               <AlertTriangle className="w-6 h-6" />
@@ -1150,7 +1150,7 @@ const ImportViewContent: React.FC = () => {
   );
 
   return (
-    <div className="h-full flex flex-col overflow-hidden bg-[#090d16] text-slate-100">
+    <div className="h-full flex flex-col overflow-hidden bg-[#0c0c0e] text-slate-100">
       {/* Top Header */}
       <div className="p-6 pb-4 border-b border-slate-850 flex flex-col md:flex-row md:items-center justify-between gap-4 shrink-0 bg-slate-950/40 backdrop-blur-md">
         <div className="flex items-center gap-4">

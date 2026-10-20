@@ -318,37 +318,6 @@ export const SettingsView: React.FC = () => {
             </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-medium text-slate-400 mb-2">Tema da Interface</label>
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setTheme('dark')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold border transition-all ${
-                  theme === 'dark'
-                    ? 'bg-brand-500/10 text-brand-400 border-brand-500/30'
-                    : 'bg-slate-950/60 text-slate-400 border-slate-800 hover:text-white'
-                }`}
-              >
-                <Moon className="w-4 h-4" />
-                Tema Escuro (Recomendado)
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setTheme('light')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold border transition-all ${
-                  theme === 'light'
-                    ? 'bg-brand-500/10 text-brand-400 border-brand-500/30'
-                    : 'bg-slate-950/60 text-slate-400 border-slate-800 hover:text-white'
-                }`}
-              >
-                <Sun className="w-4 h-4" />
-                Tema Claro
-              </button>
-            </div>
-          </div>
-
           <div className="pt-2 flex justify-end">
             <button
               type="submit"

@@ -27,7 +27,7 @@ import { GameRarity } from '../types';
 
 const ICONS: Record<string, React.FC<{ className?: string; style?: React.CSSProperties }>> = {
   CalendarCheck, Castle, CreditCard, FileUp, Flame, FolderArchive, GraduationCap, Inbox, Library,
-  Crown, PiggyBank, Search, Shield, ShieldCheck, Swords, Tags, Target, TrendingUp, Trophy,
+  Crown, PiggyBank, Search, Shield, ShieldCheck, Sparkles, Swords, Tags, Target, TrendingUp, Trophy,
 };
 
 export const RARITY_STYLE: Record<GameRarity, { label: string; color: string }> = {

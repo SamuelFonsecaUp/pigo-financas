@@ -76,7 +76,7 @@ export const PinLockModal: React.FC = () => {
   const dotCount = Math.max(4, pin.length);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#090d16] p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0c0c0e] p-4">
       <div className="w-full max-w-sm flex flex-col items-center">
         <div className="w-16 h-16 rounded-2xl mb-4 shadow-xl overflow-hidden shrink-0 border border-emerald-500/20">
           <img src={pigoIcon} alt="Pigo Logo" className="w-full h-full object-cover" />

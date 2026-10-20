@@ -7,6 +7,8 @@ const { FinancialIntelligenceEngine } = require('./intelligenceEngine.cjs');
 const { CloudAuth } = require('./cloudAuth.cjs');
 const { CloudSyncEngine } = require('./syncEngine.cjs');
 const { GamificationEngine } = require('./gamificationEngine.cjs');
+const { HabitsEngine } = require('./habitsEngine.cjs');
+const { ToolsEngine } = require('./toolsEngine.cjs');
 
 // Helper to format ISO date to YYYY-MM
 function getMonthKey(dateStr) {
@@ -134,6 +136,20 @@ class FinancialService {
       this._intelligence = new FinancialIntelligenceEngine(this.db);
     }
     return this._intelligence;
+  }
+
+  get habits() {
+    if (!this._habits) {
+      this._habits = new HabitsEngine(this.db);
+    }
+    return this._habits;
+  }
+
+  get tools() {
+    if (!this._tools) {
+      this._tools = new ToolsEngine(this.db);
+    }
+    return this._tools;
   }
 
   get gamification() {
@@ -3453,6 +3469,74 @@ class FinancialService {
 
   cloudFullPull() {
     return this.syncEngine.fullPull();
+  }
+  // Habits Methods
+  getHabits(includeArchived) {
+    return this.habits.getHabits(includeArchived);
+  }
+
+  createHabit(data) {
+    return this.habits.createHabit(data);
+  }
+
+  updateHabit(id, data) {
+    return this.habits.updateHabit(id, data);
+  }
+
+  deleteHabit(id) {
+    return this.habits.deleteHabit(id);
+  }
+
+  toggleHabitDay(habitId, date, value, notes) {
+    return this.habits.toggleHabitDay(habitId, date, value, notes);
+  }
+
+  getHabitHeatmap(habitId, year) {
+    return this.habits.getHabitHeatmap(habitId, year);
+  }
+
+  getHabitsOverview() {
+    return this.habits.getHabitsOverview();
+  }
+
+  // Tools Module (Notes, Mindmaps, Password Vault)
+  getNotes() {
+    return this.tools.getNotes();
+  }
+  createNote(data) {
+    return this.tools.createNote(data);
+  }
+  updateNote(id, data) {
+    return this.tools.updateNote(id, data);
+  }
+  deleteNote(id) {
+    return this.tools.deleteNote(id);
+  }
+
+  getMindmaps() {
+    return this.tools.getMindmaps();
+  }
+  createMindmap(data) {
+    return this.tools.createMindmap(data);
+  }
+  updateMindmap(id, data) {
+    return this.tools.updateMindmap(id, data);
+  }
+  deleteMindmap(id) {
+    return this.tools.deleteMindmap(id);
+  }
+
+  getVaultItems() {
+    return this.tools.getVaultItems();
+  }
+  createVaultItem(data) {
+    return this.tools.createVaultItem(data);
+  }
+  updateVaultItem(id, data) {
+    return this.tools.updateVaultItem(id, data);
+  }
+  deleteVaultItem(id) {
+    return this.tools.deleteVaultItem(id);
   }
 }
 

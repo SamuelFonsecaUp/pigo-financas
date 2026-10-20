@@ -8,6 +8,22 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        // Neutral Dark Gray (Zinc/Charcoal) replacing bluish slate across the whole UI
+        slate: {
+          50: '#fafafa',
+          100: '#f4f4f5',
+          200: '#e4e4e7',
+          300: '#d4d4d8',
+          400: '#a1a1aa',
+          500: '#71717a',
+          600: '#52525b',
+          700: '#3f3f46',
+          750: '#323238',
+          800: '#27272a',
+          850: '#1e1e22',
+          900: '#161619',
+          950: '#0f0f12',
+        },
         brand: {
           50: '#f0fdf4',
           100: '#dcfce7',
@@ -22,11 +38,11 @@ module.exports = {
           950: '#052e16',
         },
         dark: {
-          bg: '#090d16',
-          card: '#0f172a',
-          cardHover: '#131e35',
-          border: '#1e293b',
-          muted: '#94a3b8',
+          bg: '#0c0c0e',
+          card: '#161619',
+          cardHover: '#1f1f24',
+          border: '#27272a',
+          muted: '#a1a1aa',
         }
       },
       fontFamily: {
